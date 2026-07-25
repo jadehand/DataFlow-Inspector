@@ -18,8 +18,12 @@ import logging
 import re
 from typing import Any
 
-import sqlglot
-from sqlglot import exp
+try:
+    import sqlglot
+    from sqlglot import exp
+except ModuleNotFoundError:  # Optional at runtime; parser falls back to regex.
+    sqlglot = None
+    exp = None
 
 from .dialect_dws import get_dialect, preprocess_dml
 from .regex_fallback import line_number, parse_sql as regex_parse_sql
@@ -35,6 +39,12 @@ def parse_sql(text: str, path: str, catalog: dict[str, dict]) -> list[dict[str, 
 
     先用 SQLGlot AST 解析，失败时降级到正则解析。
     """
+    if sqlglot is None or exp is None:
+        ops = regex_parse_sql(text, path, catalog)
+        for op in ops:
+            op["parse_source"] = "regex_fallback"
+        return ops
+
     processed = preprocess_dml(text)
     dialect = get_dialect()
 

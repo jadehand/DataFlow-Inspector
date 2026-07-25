@@ -10,6 +10,8 @@
 - 检测时间口径不一致、`SELECT *`、指标过滤漂移等风险。
 - 对拟议字段或逻辑变更生成上下游影响说明。
 - 前端提供资产、血缘、作业、指标、版本与助手视图。
+- 支持表级/字段级元数据集中保存、保存前差异预览和 metadata revision 快照。
+- 支持导入版本 compare 与 metadata revision compare 两类差异视图。
 
 内置演示包位于 `examples/token-traffic-demo.zip`，覆盖：
 
@@ -98,3 +100,16 @@ tests_e2e/      黑盒验收脚本
 ```
 
 详细输入格式和验收说明见 `docs/input-format.md` 与 `docs/acceptance.md`。
+
+## Metadata Revision
+
+保存表级或字段级元数据时，系统会生成一条 metadata revision 快照，用于审计和后续比较。
+
+当前支持：
+
+- `GET /api/projects/{pid}/metadata/revisions`
+- `GET /api/projects/{pid}/metadata/compare?left=R1&right=R2`
+- revision 审计字段：`source`、`operator`、`reason`
+- 版本比较页展示最近两次 metadata revision 的差异摘要
+- 表详情页展示当前表所在项目的最新 metadata revision
+- 从版本比较或 metadata revision 比较可直接带差异证据进入影响分析

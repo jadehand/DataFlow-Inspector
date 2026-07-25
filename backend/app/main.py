@@ -4,6 +4,7 @@ import csv
 import hashlib
 import io
 import json
+import logging
 import os
 import re
 import shutil
@@ -12,21 +13,34 @@ try:
 except ModuleNotFoundError:  # Some minimal Python images omit stdlib _sqlite3.
     import pysqlite3 as sqlite3
 import tempfile
+import time
+import traceback
+import uuid
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from fastapi import Body, FastAPI, HTTPException, Query, Request, Response
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
+from .parser import analyze as parser_analyze
+from .parser import parse_ddl as parser_parse_ddl
+from .parser import parse_sql as parser_parse_sql
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = Path(os.getenv("DFI_DATA_DIR", ROOT / "data"))
 DB_PATH = Path(os.getenv("DFI_DB_PATH", DATA_DIR / "dataflow.db"))
 IMPORT_DIR = Path(os.getenv("DFI_IMPORT_DIR", DATA_DIR / "imports"))
 MAX_ZIP = int(os.getenv("DFI_MAX_ZIP_BYTES", 50 * 1024 * 1024))
+logger = logging.getLogger("dataflow_inspector")
+if not logger.handlers:
+    logging.basicConfig(
+        level=os.getenv("DFI_LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
 
 
 def now() -> str:
@@ -53,7 +67,66 @@ def init_db() -> None:
           version INTEGER NOT NULL, sha256 TEXT NOT NULL, filename TEXT NOT NULL,
           status TEXT NOT NULL, created_at TEXT NOT NULL, analysis TEXT NOT NULL,
           UNIQUE(project_id, version));
+        CREATE TABLE IF NOT EXISTS table_metadata(
+          project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+          table_name TEXT NOT NULL,
+          display_name TEXT NOT NULL DEFAULT '',
+          owner TEXT NOT NULL DEFAULT '',
+          update_frequency TEXT NOT NULL DEFAULT '',
+          retention TEXT NOT NULL DEFAULT '',
+          note TEXT NOT NULL DEFAULT '',
+          modified_at TEXT NOT NULL,
+          PRIMARY KEY(project_id, table_name));
+        CREATE TABLE IF NOT EXISTS column_metadata(
+          project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+          table_name TEXT NOT NULL,
+          column_name TEXT NOT NULL,
+          display_name TEXT NOT NULL DEFAULT '',
+          note TEXT NOT NULL DEFAULT '',
+          business_tag TEXT NOT NULL DEFAULT '',
+          modified_at TEXT NOT NULL,
+          PRIMARY KEY(project_id, table_name, column_name));
+        CREATE TABLE IF NOT EXISTS metadata_revisions(
+          id INTEGER PRIMARY KEY,
+          project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+          revision INTEGER NOT NULL,
+          import_version INTEGER NOT NULL DEFAULT 0,
+          summary_json TEXT NOT NULL DEFAULT '{}',
+          source TEXT NOT NULL DEFAULT '',
+          operator TEXT NOT NULL DEFAULT '',
+          reason TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL,
+          UNIQUE(project_id, revision));
+        CREATE TABLE IF NOT EXISTS table_metadata_revisions(
+          project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+          revision_id INTEGER NOT NULL REFERENCES metadata_revisions(id) ON DELETE CASCADE,
+          table_name TEXT NOT NULL,
+          display_name TEXT NOT NULL DEFAULT '',
+          owner TEXT NOT NULL DEFAULT '',
+          update_frequency TEXT NOT NULL DEFAULT '',
+          retention TEXT NOT NULL DEFAULT '',
+          note TEXT NOT NULL DEFAULT '',
+          PRIMARY KEY(project_id, revision_id, table_name));
+        CREATE TABLE IF NOT EXISTS column_metadata_revisions(
+          project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+          revision_id INTEGER NOT NULL REFERENCES metadata_revisions(id) ON DELETE CASCADE,
+          table_name TEXT NOT NULL,
+          column_name TEXT NOT NULL,
+          display_name TEXT NOT NULL DEFAULT '',
+          note TEXT NOT NULL DEFAULT '',
+          business_tag TEXT NOT NULL DEFAULT '',
+          PRIMARY KEY(project_id, revision_id, table_name, column_name));
         """)
+        existing_columns = {
+            row["name"]
+            for row in c.execute("PRAGMA table_info(metadata_revisions)").fetchall()
+        }
+        if "source" not in existing_columns:
+            c.execute("ALTER TABLE metadata_revisions ADD COLUMN source TEXT NOT NULL DEFAULT ''")
+        if "operator" not in existing_columns:
+            c.execute("ALTER TABLE metadata_revisions ADD COLUMN operator TEXT NOT NULL DEFAULT ''")
+        if "reason" not in existing_columns:
+            c.execute("ALTER TABLE metadata_revisions ADD COLUMN reason TEXT NOT NULL DEFAULT ''")
 
 
 app = FastAPI(title="DataFlow Inspector API", version="0.1.0")
@@ -65,6 +138,80 @@ app.add_middleware(
     allow_origin_regex=r"^https?://(?:127\.0\.0\.1|localhost):(?!8080$)\d{1,5}$",
     allow_methods=["*"], allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def request_context(request: Request, call_next):
+    request_id = request.headers.get("x-request-id") or uuid.uuid4().hex[:12]
+    request.state.request_id = request_id
+    started = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+        logger.exception(
+            "request_failed method=%s path=%s request_id=%s elapsed_ms=%s",
+            request.method,
+            request.url.path,
+            request_id,
+            elapsed_ms,
+        )
+        raise
+    elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+    response.headers["x-request-id"] = request_id
+    response.headers["x-response-time-ms"] = str(elapsed_ms)
+    logger.info(
+        "request_ok method=%s path=%s status=%s request_id=%s elapsed_ms=%s",
+        request.method,
+        request.url.path,
+        response.status_code,
+        request_id,
+        elapsed_ms,
+    )
+    return response
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    request_id = getattr(request.state, "request_id", None)
+    detail = exc.detail if isinstance(exc.detail, str) else json.dumps(exc.detail, ensure_ascii=False)
+    logger.warning(
+        "http_error method=%s path=%s status=%s request_id=%s detail=%s",
+        request.method,
+        request.url.path,
+        exc.status_code,
+        request_id,
+        detail,
+    )
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "error": detail,
+            "detail": detail,
+            "status_code": exc.status_code,
+            "request_id": request_id,
+        },
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    request_id = getattr(request.state, "request_id", None)
+    logger.exception(
+        "unhandled_error method=%s path=%s request_id=%s",
+        request.method,
+        request.url.path,
+        request_id,
+    )
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": "internal server error",
+            "detail": str(exc),
+            "request_id": request_id,
+            "trace_hint": traceback.format_exception_only(type(exc), exc)[-1].strip(),
+        },
+    )
 
 
 @app.on_event("startup")
@@ -83,6 +230,44 @@ class ChangeIn(BaseModel):
     change_type: str
     before: str | None = None
     after: str | None = None
+    compare_scope: str | None = None
+    left_version: int | None = None
+    right_version: int | None = None
+    left_revision: int | None = None
+    right_revision: int | None = None
+
+
+class MetadataRevisionContextIn(BaseModel):
+    source: str = ""
+    operator: str = ""
+    reason: str = ""
+
+
+class TableMetadataPatch(BaseModel):
+    table_name: str
+    display_name: str = ""
+    owner: str = ""
+    update_frequency: str = ""
+    retention: str = ""
+    note: str = ""
+
+
+class ColumnMetadataPatch(BaseModel):
+    table_name: str
+    column_name: str
+    display_name: str = ""
+    note: str = ""
+    business_tag: str = ""
+
+
+class DictionaryBulkSaveIn(BaseModel):
+    tables: list[TableMetadataPatch] = []
+    columns: list[ColumnMetadataPatch] = []
+    revision_meta: MetadataRevisionContextIn | None = None
+
+
+def _normalize_text(value: Any) -> str:
+    return str(value or "").strip()
 
 
 def project_or_404(pid: int) -> dict:
@@ -117,6 +302,566 @@ def latest_analysis(pid: int, version: int | None = None) -> tuple[dict, dict]:
         raise HTTPException(404, "project has no analyzed import")
     meta = dict(r)
     return json.loads(meta.pop("analysis")), meta
+
+
+def _metric_signature(metric: dict) -> tuple[str, str, str, str]:
+    return (
+        str(metric.get("table", "")),
+        str(metric.get("name", "")),
+        str(metric.get("formula", "")),
+        str(metric.get("filter", "")),
+    )
+
+
+def _risk_signature(risk: dict) -> tuple[str, str, str]:
+    return (
+        str(risk.get("code", "")),
+        str(risk.get("severity", "")),
+        str(risk.get("message", "")),
+    )
+
+
+def _table_snapshot(table: dict) -> dict:
+    dws = table.get("dws") or {}
+    return {
+        "name": table.get("name"),
+        "layer": table.get("layer"),
+        "column_count": len(table.get("columns", [])),
+        "ddl_file": table.get("ddl_file"),
+        "partition_columns": dws.get("partition_columns", []),
+        "partition_type": dws.get("partition_type"),
+        "distribute_columns": dws.get("distribute_columns", []),
+    }
+
+
+def _column_diffs(left_table: dict, right_table: dict) -> dict:
+    left_cols = {c["name"]: c for c in left_table.get("columns", [])}
+    right_cols = {c["name"]: c for c in right_table.get("columns", [])}
+    changed = []
+    for name in sorted(set(left_cols) & set(right_cols)):
+        before = left_cols[name]
+        after = right_cols[name]
+        delta = {}
+        if before.get("type") != after.get("type"):
+            delta["type"] = {"before": before.get("type"), "after": after.get("type")}
+        if before.get("role") != after.get("role"):
+            delta["role"] = {"before": before.get("role"), "after": after.get("role")}
+        if before.get("semantic_type") != after.get("semantic_type"):
+            delta["semantic_type"] = {"before": before.get("semantic_type"), "after": after.get("semantic_type")}
+        if delta:
+            changed.append({"name": name, "changes": delta})
+    return {
+        "added": [
+            {
+                "name": name,
+                "type": right_cols[name].get("type"),
+                "role": right_cols[name].get("role"),
+            }
+            for name in sorted(set(right_cols) - set(left_cols))
+        ],
+        "removed": [
+            {
+                "name": name,
+                "type": left_cols[name].get("type"),
+                "role": left_cols[name].get("role"),
+            }
+            for name in sorted(set(left_cols) - set(right_cols))
+        ],
+        "changed": changed,
+    }
+
+
+def _import_summary_row(row: sqlite3.Row) -> dict:
+    item = dict(row)
+    analysis = json.loads(item.pop("analysis"))
+    diagnostics = analysis.get("diagnostics", [])
+    item["summary"] = analysis.get("summary", {})
+    item["diagnostics_count"] = len(diagnostics)
+    item["error_count"] = sum(1 for d in diagnostics if d.get("severity") == "error")
+    item["warning_count"] = sum(1 for d in diagnostics if d.get("severity") == "warning")
+    item["risk_count"] = len(analysis.get("risks", []))
+    item["job_count"] = len(analysis.get("jobs", []))
+    return item
+
+
+def _find_table_or_404(analysis: dict, table_name: str) -> dict:
+    wanted = table_name.lower()
+    for table in analysis.get("tables", []):
+        if str(table.get("name", "")).lower() == wanted:
+            return table
+    raise HTTPException(404, f"table {table_name} not found")
+
+
+def _field_kind(column: dict, metric_names: set[str]) -> str:
+    name = str(column.get("name", "")).lower()
+    role = str(column.get("role", "")).lower()
+    semantic = str(column.get("semantic_type", "")).lower()
+    if name in metric_names or role == "measure" or semantic == "metric":
+        return "metric"
+    if "partition" in role or "partition" in semantic:
+        return "partition"
+    if "time" in role or "time" in semantic:
+        return "time"
+    if role == "dimension" or semantic == "dimension":
+        return "dimension"
+    return "field"
+
+
+def _table_metadata_map(pid: int) -> dict[str, dict]:
+    with db() as c:
+        rows = c.execute(
+            "SELECT * FROM table_metadata WHERE project_id=?",
+            (pid,),
+        ).fetchall()
+    return {str(row["table_name"]).lower(): dict(row) for row in rows}
+
+
+def _column_metadata_map(pid: int) -> dict[tuple[str, str], dict]:
+    with db() as c:
+        rows = c.execute(
+            "SELECT * FROM column_metadata WHERE project_id=?",
+            (pid,),
+        ).fetchall()
+    return {
+        (str(row["table_name"]).lower(), str(row["column_name"]).lower()): dict(row)
+        for row in rows
+    }
+
+
+def _metadata_revision_rows(pid: int) -> list[dict]:
+    with db() as c:
+        rows = c.execute(
+            "SELECT * FROM metadata_revisions WHERE project_id=? ORDER BY revision DESC",
+            (pid,),
+        ).fetchall()
+    items = []
+    for row in rows:
+        item = dict(row)
+        item["summary"] = json.loads(item.pop("summary_json") or "{}")
+        items.append(item)
+    return items
+
+
+def _latest_metadata_revision(pid: int) -> dict | None:
+    rows = _metadata_revision_rows(pid)
+    return rows[0] if rows else None
+
+
+def _table_metadata_snapshot(pid: int, revision: int | None = None) -> dict[str, dict]:
+    if revision is None:
+        return _table_metadata_map(pid)
+    with db() as c:
+        row = c.execute(
+            "SELECT id FROM metadata_revisions WHERE project_id=? AND revision=?",
+            (pid, revision),
+        ).fetchone()
+        if not row:
+            return {}
+        rows = c.execute(
+            """SELECT table_name,display_name,owner,update_frequency,retention,note
+               FROM table_metadata_revisions WHERE project_id=? AND revision_id=?""",
+            (pid, row["id"]),
+        ).fetchall()
+    return {str(item["table_name"]).lower(): dict(item) for item in rows}
+
+
+def _column_metadata_snapshot(pid: int, revision: int | None = None) -> dict[tuple[str, str], dict]:
+    if revision is None:
+        return _column_metadata_map(pid)
+    with db() as c:
+        row = c.execute(
+            "SELECT id FROM metadata_revisions WHERE project_id=? AND revision=?",
+            (pid, revision),
+        ).fetchone()
+        if not row:
+            return {}
+        rows = c.execute(
+            """SELECT table_name,column_name,display_name,note,business_tag
+               FROM column_metadata_revisions WHERE project_id=? AND revision_id=?""",
+            (pid, row["id"]),
+        ).fetchall()
+    return {
+        (str(item["table_name"]).lower(), str(item["column_name"]).lower()): dict(item)
+        for item in rows
+    }
+
+
+def _create_metadata_revision(
+    pid: int,
+    import_version: int,
+    preview: dict,
+    revision_meta: MetadataRevisionContextIn | None = None,
+) -> dict | None:
+    table_map = _table_metadata_map(pid)
+    column_map = _column_metadata_map(pid)
+    if not table_map and not column_map:
+        return None
+    previous = _latest_metadata_revision(pid)
+    next_revision = int(previous["revision"]) + 1 if previous else 1
+    ts = now()
+    source = _normalize_text(revision_meta.source if revision_meta else "") or "dictionary_bulk"
+    operator_name = _normalize_text(revision_meta.operator if revision_meta else "")
+    reason = _normalize_text(revision_meta.reason if revision_meta else "")
+    with db() as c:
+        cur = c.execute(
+            """INSERT INTO metadata_revisions(project_id,revision,import_version,summary_json,source,operator,reason,created_at)
+               VALUES(?,?,?,?,?,?,?,?)""",
+            (
+                pid,
+                next_revision,
+                import_version,
+                json.dumps(preview.get("summary", {}), ensure_ascii=False),
+                source,
+                operator_name,
+                reason,
+                ts,
+            ),
+        )
+        revision_id = cur.lastrowid
+        c.executemany(
+            """INSERT INTO table_metadata_revisions(
+                   project_id,revision_id,table_name,display_name,owner,update_frequency,retention,note
+               ) VALUES(?,?,?,?,?,?,?,?)""",
+            [
+                (
+                    pid,
+                    revision_id,
+                    key,
+                    value.get("display_name", ""),
+                    value.get("owner", ""),
+                    value.get("update_frequency", ""),
+                    value.get("retention", ""),
+                    value.get("note", ""),
+                )
+                for key, value in sorted(table_map.items())
+            ],
+        )
+        c.executemany(
+            """INSERT INTO column_metadata_revisions(
+                   project_id,revision_id,table_name,column_name,display_name,note,business_tag
+               ) VALUES(?,?,?,?,?,?,?)""",
+            [
+                (
+                    pid,
+                    revision_id,
+                    table_name,
+                    column_name,
+                    value.get("display_name", ""),
+                    value.get("note", ""),
+                    value.get("business_tag", ""),
+                )
+                for (table_name, column_name), value in sorted(column_map.items())
+            ],
+        )
+    return {
+        "id": revision_id,
+        "revision": next_revision,
+        "import_version": import_version,
+        "source": source,
+        "operator": operator_name,
+        "reason": reason,
+        "created_at": ts,
+        "summary": preview.get("summary", {}),
+    }
+
+
+def _compare_metadata_revisions(pid: int, left: int, right: int) -> dict:
+    left_tables = _table_metadata_snapshot(pid, left)
+    right_tables = _table_metadata_snapshot(pid, right)
+    left_columns = _column_metadata_snapshot(pid, left)
+    right_columns = _column_metadata_snapshot(pid, right)
+    table_changes = []
+    column_changes = []
+    diff_items = []
+
+    for table_name in sorted(set(left_tables) | set(right_tables)):
+        before = left_tables.get(table_name)
+        after = right_tables.get(table_name)
+        if before is None:
+            table_changes.append({"table_name": table_name, "change_type": "added", "before": None, "after": after, "changes": after})
+            diff_items.append({"scope": "table_metadata", "table": table_name, "object": table_name, "change_type": "added", "before": None, "after": after})
+            continue
+        if after is None:
+            table_changes.append({"table_name": table_name, "change_type": "removed", "before": before, "after": None, "changes": before})
+            diff_items.append({"scope": "table_metadata", "table": table_name, "object": table_name, "change_type": "removed", "before": before, "after": None})
+            continue
+        delta = {
+            key: {"before": _normalize_text(before.get(key)), "after": _normalize_text(after.get(key))}
+            for key in ("display_name", "owner", "update_frequency", "retention", "note")
+            if _normalize_text(before.get(key)) != _normalize_text(after.get(key))
+        }
+        if delta:
+            table_changes.append({"table_name": table_name, "change_type": "changed", "before": before, "after": after, "changes": delta})
+            diff_items.append({"scope": "table_metadata", "table": table_name, "object": table_name, "change_type": "changed", "before": before, "after": after, "details": delta})
+
+    for key in sorted(set(left_columns) | set(right_columns)):
+        before = left_columns.get(key)
+        after = right_columns.get(key)
+        table_name, column_name = key
+        object_name = f"{table_name}.{column_name}"
+        if before is None:
+            column_changes.append({"table_name": table_name, "column_name": column_name, "change_type": "added", "before": None, "after": after, "changes": after})
+            diff_items.append({"scope": "column_metadata", "table": table_name, "object": object_name, "change_type": "added", "before": None, "after": after})
+            continue
+        if after is None:
+            column_changes.append({"table_name": table_name, "column_name": column_name, "change_type": "removed", "before": before, "after": None, "changes": before})
+            diff_items.append({"scope": "column_metadata", "table": table_name, "object": object_name, "change_type": "removed", "before": before, "after": None})
+            continue
+        delta = {
+            field: {"before": _normalize_text(before.get(field)), "after": _normalize_text(after.get(field))}
+            for field in ("display_name", "note", "business_tag")
+            if _normalize_text(before.get(field)) != _normalize_text(after.get(field))
+        }
+        if delta:
+            column_changes.append({"table_name": table_name, "column_name": column_name, "change_type": "changed", "before": before, "after": after, "changes": delta})
+            diff_items.append({"scope": "column_metadata", "table": table_name, "object": object_name, "change_type": "changed", "before": before, "after": after, "details": delta})
+
+    return {
+        "summary": {
+            "table_changes": len(table_changes),
+            "column_changes": len(column_changes),
+            "diff_items": len(diff_items),
+        },
+        "tables": table_changes,
+        "columns": column_changes,
+        "diff_items": diff_items,
+    }
+
+
+def _filter_diff_items_for_object(diff_items: list[dict], object_name: str) -> list[dict]:
+    normalized = str(object_name or "").strip().lower()
+    if not normalized:
+        return []
+    table_name = normalized.rsplit(".", 1)[0] if normalized.count(".") >= 2 else normalized
+    matched = []
+    for item in diff_items:
+        item_table = str(item.get("table") or "").lower()
+        item_object = str(item.get("object") or "").lower()
+        if normalized == item_object or normalized == item_table:
+            matched.append(item)
+            continue
+        if table_name and (table_name == item_table or table_name == item_object):
+            matched.append(item)
+            continue
+        if normalized in item_object or normalized in item_table:
+            matched.append(item)
+    return matched
+
+
+def _merge_table_metadata(pid: int, table: dict) -> dict:
+    meta = _table_metadata_map(pid).get(str(table.get("name", "")).lower(), {})
+    merged = dict(table)
+    for key in ("display_name", "owner", "update_frequency", "retention", "note"):
+        if meta.get(key):
+            merged[key] = meta[key]
+    return merged
+
+
+def _merge_column_metadata(column: dict, meta: dict | None) -> dict:
+    merged = dict(column)
+    if not meta:
+        return merged
+    for key in ("display_name", "note", "business_tag"):
+        if meta.get(key):
+            merged[key] = meta[key]
+    return merged
+
+
+def _compare_table_fields(left_table: dict, right_table: dict) -> list[dict]:
+    diffs = []
+    name = str(right_table.get("name") or left_table.get("name"))
+    columns = _column_diffs(left_table, right_table)
+    for added in columns["added"]:
+        diffs.append({
+            "scope": "column",
+            "table": name,
+            "object": f"{name}.{added['name']}",
+            "change_type": "added",
+            "before": None,
+            "after": added,
+        })
+    for removed in columns["removed"]:
+        diffs.append({
+            "scope": "column",
+            "table": name,
+            "object": f"{name}.{removed['name']}",
+            "change_type": "removed",
+            "before": removed,
+            "after": None,
+        })
+    for changed in columns["changed"]:
+        diffs.append({
+            "scope": "column",
+            "table": name,
+            "object": f"{name}.{changed['name']}",
+            "change_type": "changed",
+            "before": changed["changes"],
+            "after": changed["changes"],
+            "details": changed["changes"],
+        })
+    return diffs
+
+
+def _dictionary_rows(pid: int, analysis: dict) -> list[dict]:
+    table_meta = _table_metadata_map(pid)
+    column_meta = _column_metadata_map(pid)
+    rows = []
+    for raw_table in analysis.get("tables", []):
+        table = _merge_table_metadata(pid, raw_table)
+        for raw_column in table.get("columns", []):
+            meta = column_meta.get((str(table.get("name", "")).lower(), str(raw_column.get("name", "")).lower()))
+            column = _merge_column_metadata(raw_column, meta)
+            rows.append({
+                "table_name": table.get("name"),
+                "table_display_name": table.get("display_name", ""),
+                "layer": table.get("layer"),
+                "owner": table.get("owner", ""),
+                "update_frequency": table.get("update_frequency", ""),
+                "retention": table.get("retention", ""),
+                "table_note": table.get("note", ""),
+                "column_name": column.get("name"),
+                "column_display_name": column.get("display_name", ""),
+                "column_type": column.get("type"),
+                "role": column.get("role"),
+                "semantic_type": column.get("semantic_type"),
+                "business_tag": column.get("business_tag", ""),
+                "column_note": column.get("note", ""),
+            })
+    return rows
+
+
+def _build_dictionary_bulk_preview(
+    pid: int,
+    payload: DictionaryBulkSaveIn,
+    analysis: dict,
+    version: int,
+) -> dict:
+    known_tables = {
+        str(table.get("name", "")).lower(): {
+            str(column.get("name", "")).lower() for column in table.get("columns", [])
+        }
+        for table in analysis.get("tables", [])
+    }
+    table_meta = _table_metadata_map(pid)
+    column_meta = _column_metadata_map(pid)
+    missing_tables = sorted({
+        item.table_name.strip().lower()
+        for item in payload.tables + payload.columns
+        if item.table_name.strip() and item.table_name.strip().lower() not in known_tables
+    })
+    missing_columns = sorted({
+        f"{item.table_name.strip().lower()}.{item.column_name.strip().lower()}"
+        for item in payload.columns
+        if item.table_name.strip().lower() in known_tables
+        and item.column_name.strip()
+        and item.column_name.strip().lower() not in known_tables[item.table_name.strip().lower()]
+    })
+    table_changes = []
+    column_changes = []
+    unchanged_tables = []
+    unchanged_columns = []
+    touched_tables: set[str] = set()
+    table_compare_urls: dict[str, str] = {}
+
+    for item in payload.tables:
+        table_name = item.table_name.strip().lower()
+        if not table_name or table_name in missing_tables:
+            continue
+        current = table_meta.get(table_name, {})
+        proposed = {
+            "display_name": _normalize_text(item.display_name),
+            "owner": _normalize_text(item.owner),
+            "update_frequency": _normalize_text(item.update_frequency),
+            "retention": _normalize_text(item.retention),
+            "note": _normalize_text(item.note),
+        }
+        delta = {
+            key: {"before": _normalize_text(current.get(key)), "after": value}
+            for key, value in proposed.items()
+            if _normalize_text(current.get(key)) != value
+        }
+        if not delta:
+            unchanged_tables.append(table_name)
+            continue
+        touched_tables.add(table_name)
+        table_compare_urls.setdefault(
+            table_name,
+            f"/api/projects/{pid}/tables/{table_name}/detail?version={version}",
+        )
+        table_changes.append({
+            "table_name": table_name,
+            "current": {key: _normalize_text(current.get(key)) for key in proposed},
+            "proposed": proposed,
+            "changes": delta,
+        })
+
+    for item in payload.columns:
+        table_name = item.table_name.strip().lower()
+        column_name = item.column_name.strip().lower()
+        if not table_name or not column_name:
+            continue
+        if table_name in missing_tables or f"{table_name}.{column_name}" in missing_columns:
+            continue
+        current = column_meta.get((table_name, column_name), {})
+        proposed = {
+            "display_name": _normalize_text(item.display_name),
+            "note": _normalize_text(item.note),
+            "business_tag": _normalize_text(item.business_tag),
+        }
+        delta = {
+            key: {"before": _normalize_text(current.get(key)), "after": value}
+            for key, value in proposed.items()
+            if _normalize_text(current.get(key)) != value
+        }
+        if not delta:
+            unchanged_columns.append(f"{table_name}.{column_name}")
+            continue
+        touched_tables.add(table_name)
+        table_compare_urls.setdefault(
+            table_name,
+            f"/api/projects/{pid}/tables/{table_name}/detail?version={version}",
+        )
+        column_changes.append({
+            "table_name": table_name,
+            "column_name": column_name,
+            "current": {key: _normalize_text(current.get(key)) for key in proposed},
+            "proposed": proposed,
+            "changes": delta,
+        })
+
+    latest_revision = _latest_metadata_revision(pid)
+    next_revision = int(latest_revision["revision"]) + 1 if latest_revision else 1
+    return {
+        "project_id": pid,
+        "version": version,
+        "metadata_revision": latest_revision,
+        "next_metadata_revision": next_revision,
+        "summary": {
+            "table_updates": len(table_changes),
+            "column_updates": len(column_changes),
+            "table_field_changes": sum(len(item["changes"]) for item in table_changes),
+            "column_field_changes": sum(len(item["changes"]) for item in column_changes),
+            "unchanged_tables": len(unchanged_tables),
+            "unchanged_columns": len(unchanged_columns),
+            "missing_tables": len(missing_tables),
+            "missing_columns": len(missing_columns),
+        },
+        "changes": {
+            "tables": table_changes,
+            "columns": column_changes,
+        },
+        "touched_tables": sorted(touched_tables),
+        "skipped": {
+            "missing_tables": missing_tables,
+            "missing_columns": missing_columns,
+            "unchanged_tables": sorted(unchanged_tables),
+            "unchanged_columns": sorted(unchanged_columns),
+        },
+        "compare_hints": {
+            "project_compare_url": f"/api/projects/{pid}/compare?left={version}&right={version}",
+            "table_detail_urls": table_compare_urls,
+        },
+    }
 
 
 @app.get("/api/health")
@@ -197,24 +942,7 @@ def split_top(text: str) -> list[str]:
 
 
 def parse_ddl(text: str, path: str) -> list[dict]:
-    tables = []
-    pat = re.compile(rf"CREATE\s+(?:UNLOGGED\s+|TEMP(?:ORARY)?\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?({IDENT})\s*\(",
-                     re.I)
-    for m in pat.finditer(text):
-        depth, end = 1, m.end()
-        while end < len(text) and depth:
-            depth += (text[end] == "(") - (text[end] == ")"); end += 1
-        cols = []
-        for part in split_top(text[m.end():end - 1]):
-            cm = re.match(r'\s*"?([\w$]+)"?\s+([A-Za-z][\w]*(?:\s*\([^)]*\))?)', part)
-            if not cm or cm.group(1).upper() in {"PRIMARY", "UNIQUE", "CONSTRAINT", "DISTRIBUTE", "PARTITION"}:
-                continue
-            name, typ = cm.group(1).lower(), re.sub(r"\s+", " ", cm.group(2)).upper()
-            role = classify_column(name, typ)
-            cols.append({"name": name, "type": typ, **role})
-        tables.append({"name": clean_ident(m.group(1)), "columns": cols, "ddl_file": path,
-                       "layer": layer_of(clean_ident(m.group(1)))})
-    return tables
+    return parser_parse_ddl(text, path)
 
 
 def layer_of(name: str) -> str:
@@ -318,118 +1046,7 @@ def top_level_select(text: str) -> re.Match | None:
 
 
 def parse_sql(text: str, path: str, catalog: dict[str, dict]) -> list[dict]:
-    operations = []
-    # Strip comments but preserve line count.
-    sql = re.sub(r"--[^\n]*", "", text)
-    target_matches = list(re.finditer(rf"\bINSERT\s+INTO\s+({IDENT})", sql, re.I))
-    target_matches += list(re.finditer(rf"\bCREATE\s+TABLE\s+({IDENT})\s+AS\b", sql, re.I))
-    for tm in sorted(target_matches, key=lambda x: x.start()):
-        target = clean_ident(tm.group(1))
-        stmt_start = sql.rfind(";", 0, tm.start()) + 1
-        stmt_end = sql.find(";", tm.end())
-        stmt_end = len(sql) if stmt_end < 0 else stmt_end
-        stmt = sql[stmt_start:stmt_end]
-        local_target_end = tm.end() - stmt_start
-        cte_bodies = cte_definitions(stmt)
-        ctes = {name: [clean_ident(x) for x in re.findall(
-            rf"\b(?:FROM|JOIN)\s+({IDENT})", body, re.I)]
-                for name, body in cte_bodies.items()}
-
-        def expand_cte(name: str, stack: set[str] | None = None) -> list[str]:
-            stack = set() if stack is None else stack
-            if name not in ctes or name in stack:
-                return [name]
-            resolved: list[str] = []
-            for child in ctes[name]:
-                for source in expand_cte(child, stack | {name}):
-                    if source not in resolved:
-                        resolved.append(source)
-            return resolved
-
-        sources, aliases = [], {}
-        for sm in re.finditer(rf"\b(?:FROM|JOIN)\s+({IDENT})(?:\s+(?:AS\s+)?([A-Za-z_]\w*))?", stmt[local_target_end:], re.I):
-            src = clean_ident(sm.group(1))
-            if src.upper() in {"SELECT"} or src == target:
-                continue
-            expanded = expand_cte(src)
-            for actual in expanded:
-                if actual not in sources:
-                    sources.append(actual)
-            alias = sm.group(2)
-            if alias and alias.upper() not in {"ON", "WHERE", "LEFT", "RIGHT", "FULL", "INNER", "JOIN", "GROUP"}:
-                aliases[alias.lower()] = expanded[0]
-        select_region = stmt[local_target_end:]
-        # The final SELECT follows all balanced CTE definitions. Searching from
-        # the end of the last CTE avoids mistaking nested SELECTs for the writer.
-        if cte_bodies:
-            last_body = list(cte_bodies.values())[-1]
-            body_pos = select_region.find(last_body)
-            if body_pos >= 0:
-                select_region = select_region[body_pos + len(last_body) + 1:]
-        sel = re.search(r"\bSELECT\b(.*?)(?=\bFROM\b)", select_region, re.I | re.S)
-        projections = split_top(sel.group(1)) if sel else []
-        # Aggregates are often computed inside CTEs and merely projected by
-        # name in the final SELECT. Keep those expressions for the metric
-        # catalog while leaving final-output column lineage unchanged.
-        metric_projections = list(projections)
-        for body in cte_bodies.values():
-            for cte_select in re.finditer(r"\bSELECT\b(.*?)(?=\bFROM\b)", body, re.I | re.S):
-                for expr in split_top(cte_select.group(1)):
-                    if expr not in metric_projections:
-                        metric_projections.append(expr)
-        tcols = [c["name"] for c in catalog.get(target, {}).get("columns", [])]
-        # INSERT INTO table(col_a, col_b) must map projections to the explicit
-        # writer column list instead of the physical DDL order.
-        target_tail = stmt[local_target_end:]
-        explicit_cols = re.match(r'\s*\(([^)]*)\)\s*(?=\bSELECT\b|\bWITH\b)', target_tail, re.I | re.S)
-        if explicit_cols:
-            tcols = [clean_ident(x).split(".")[-1] for x in split_top(explicit_cols.group(1))]
-        col_edges = []
-        for idx, expr in enumerate(projections):
-            aliasm = re.search(r'\s+AS\s+"?([\w$]+)"?\s*$', expr, re.I)
-            target_col = aliasm.group(1).lower() if aliasm else (tcols[idx] if idx < len(tcols) else None)
-            if not target_col:
-                continue
-            refs = re.findall(r'\b([A-Za-z_]\w*)\.("?[\w$]+"?)\b', expr)
-            resolved: set[tuple[str, str]] = set()
-            for a, col in refs:
-                src = aliases.get(a.lower())
-                if src:
-                    resolved.add((src, col.strip(chr(34)).lower()))
-                    col_edges.append({"source": f"{src}.{col.strip(chr(34)).lower()}",
-                                      "target": f"{target}.{target_col}", "expression": expr.strip(),
-                                      "file": path, "line": line_number(sql, tm.start()), "confidence": .9})
-            # SQL commonly omits a qualifier when there is a single input
-            # relation (especially aggregate layers). Resolve only catalogued
-            # columns in that unambiguous case; never guess across JOINs.
-            if len(sources) == 1:
-                src = sources[0]
-                source_cols = [c["name"] for c in catalog.get(src, {}).get("columns", [])]
-                expression_body = re.sub(r'\s+AS\s+"?[\w$]+"?\s*$', "", expr, flags=re.I)
-                for col in source_cols:
-                    if (src, col) not in resolved and re.search(rf'(?<![\w$])"?{re.escape(col)}"?(?![\w$])',
-                                                               expression_body, re.I):
-                        col_edges.append({"source": f"{src}.{col}", "target": f"{target}.{target_col}",
-                                          "expression": expr.strip(), "file": path,
-                                          "line": line_number(sql, tm.start()), "confidence": .85})
-        group = re.search(r"\bGROUP\s+BY\b(.*?)(?=\bHAVING\b|\bORDER\s+BY\b|;|$)", stmt[local_target_end:], re.I | re.S)
-        where = re.search(r"\bWHERE\b(.*?)(?=\bGROUP\s+BY\b|\bHAVING\b|\bORDER\s+BY\b|;|$)", stmt[local_target_end:], re.I | re.S)
-        operations.append({"type": "insert_select" if sql[tm.start():tm.start()+12].upper().startswith("INSERT") else "ctas",
-                           "target": target, "sources": sources, "columns": col_edges,
-                           "projections": projections, "metric_projections": metric_projections,
-                           "group_by": split_top(group.group(1)) if group else [],
-                           "where": where.group(1).strip() if where else None, "file": path,
-                           "line": line_number(sql, tm.start())})
-    # DELETE is a material operation in the common idempotent DELETE+INSERT
-    # pattern. It has no source lineage, but retaining its predicate is
-    # important for explaining replay windows and change impact.
-    for dm in re.finditer(rf"\bDELETE\s+FROM\s+({IDENT})(?:\s+WHERE\s+(.*?))?(?=;|$)", sql, re.I | re.S):
-        operations.append({"type": "delete", "target": clean_ident(dm.group(1)), "sources": [],
-                           "columns": [], "projections": [], "metric_projections": [], "group_by": [],
-                           "where": dm.group(2).strip() if dm.group(2) else None,
-                           "file": path, "line": line_number(sql, dm.start())})
-    operations.sort(key=lambda op: op["line"])
-    return operations
+    return parser_parse_sql(text, path, catalog)
 
 
 def safe_extract(blob: bytes, dest: Path) -> list[dict]:
@@ -584,91 +1201,7 @@ layer_rules:
 
 
 def analyze(dest: Path, files: list[dict]) -> dict:
-    texts: dict[str, str] = {}
-    diagnostics = []
-    for f in files:
-        if Path(f["path"]).suffix.lower() in {".sql", ".ddl", ".csv", ".yaml", ".yml"}:
-            try:
-                texts[f["path"]] = (dest / f["path"]).read_text(encoding="utf-8-sig")
-            except UnicodeDecodeError:
-                diagnostics.append({"file": f["path"], "severity": "error", "message": "file is not UTF-8"})
-    tables: list[dict] = []
-    for path, text in texts.items():
-        if Path(path).suffix.lower() in {".sql", ".ddl"}:
-            tables.extend(parse_ddl(text, path))
-    catalog = {t["name"]: t for t in tables}
-    operations = []
-    for path, text in texts.items():
-        if Path(path).suffix.lower() == ".sql":
-            operations.extend(parse_sql(text, path, catalog))
-            if re.search(r"(?<!\.)\.\.\.(?!\.)", text):
-                diagnostics.append({
-                    "file": path, "severity": "warning", "code": "INCOMPLETE_SQL",
-                    "message": "SQL contains an ellipsis placeholder; table lineage is retained, "
-                               "but omitted columns are not guessed",
-                })
-    edges, column_edges = [], []
-    for op in operations:
-        for src in op["sources"]:
-            edges.append({"source": src, "target": op["target"], "file": op["file"], "line": op["line"],
-                          "operation": op["type"], "confidence": .95})
-        column_edges.extend(op["columns"])
-    jobs, job_edges = [], []
-    for path, text in texts.items():
-        if path.endswith("jobs.csv"):
-            try:
-                jobs = list(csv.DictReader(io.StringIO(text)))
-                for j in jobs:
-                    for upstream in (j.get("upstream_jobs") or "").split("|"):
-                        if upstream.strip():
-                            job_edges.append({"source": upstream.strip(), "target": j.get("job_name"),
-                                              "status": j.get("relation_status", "inferred")})
-            except Exception as e:
-                diagnostics.append({"file": path, "severity": "error", "message": f"jobs.csv: {e}"})
-    metrics = []
-    for op in operations:
-        for i, expr in enumerate(op.get("metric_projections", op["projections"])):
-            if re.search(r"\b(COUNT|SUM|AVG|MIN|MAX|PERCENTILE_DISC)\s*\(", expr, re.I):
-                am = re.search(r"\s+AS\s+([\w$]+)\s*$", expr, re.I)
-                name = am.group(1).lower() if am else f"metric_{i+1}"
-                metrics.append({"name": name, "table": op["target"], "formula": expr.strip(),
-                                "grain": op["group_by"], "filter": op["where"], "file": op["file"], "line": op["line"]})
-    risks = []
-    for path, text in texts.items():
-        if re.search(r"\bSELECT\s+\*", text, re.I):
-            risks.append({"code": "SELECT_STAR", "severity": "high", "file": path,
-                          "message": "SELECT * may break when upstream columns change"})
-    time_usage = []
-    for op in operations:
-        body = " ".join(op["projections"] + op["group_by"])
-        fields = sorted(set(re.findall(r"\b([\w]*?(?:event|ingestion|stat|request)[\w]*time|stat_(?:minute|hour)|dt)\b", body, re.I)))
-        if fields:
-            time_usage.append({"target": op["target"], "fields": [x.lower() for x in fields], "file": op["file"]})
-    minute = {x for u in time_usage if "minute" in u["target"] for x in u["fields"]}
-    hour = {x for u in time_usage if "hour" in u["target"] for x in u["fields"]}
-    if minute and hour and minute != hour:
-        risks.append({"code": "TIME_SEMANTIC_DRIFT", "severity": "high",
-                      "message": f"minute/hour aggregations use different time fields: {sorted(minute)} vs {sorted(hour)}"})
-    filters_by_metric: dict[str, set[str]] = {}
-    for m in metrics:
-        filters_by_metric.setdefault(m["name"], set()).add(m["filter"] or "")
-    for name, filters in filters_by_metric.items():
-        if len(filters) > 1:
-            risks.append({"code": "METRIC_FILTER_DRIFT", "severity": "medium",
-                          "message": f"metric {name} has inconsistent filters"})
-    # Missing catalog sources are retained as inferred external assets.
-    known = set(catalog)
-    for e in edges:
-        for n in (e["source"], e["target"]):
-            if n not in known:
-                tables.append({"name": n, "columns": [], "ddl_file": None, "layer": layer_of(n), "inferred": True})
-                known.add(n)
-    return {"summary": {"tables": len(tables), "columns": sum(len(t["columns"]) for t in tables),
-                        "table_edges": len(edges), "column_edges": len(column_edges),
-                        "metrics": len(metrics), "risks": len(risks), "jobs": len(jobs)},
-            "files": files, "tables": tables, "operations": operations, "table_lineage": edges,
-            "column_lineage": column_edges, "jobs": jobs, "job_lineage": job_edges,
-            "metrics": metrics, "time_usage": time_usage, "risks": risks, "diagnostics": diagnostics}
+    return parser_analyze(dest, files)
 
 
 @app.post("/api/imports/preflight")
@@ -735,22 +1268,30 @@ async def upload_import(pid: int, request: Request, filename: str = Query("proje
 def list_imports(pid: int) -> list[dict]:
     project_or_404(pid)
     with db() as c:
-        rows = c.execute("SELECT id,project_id,version,sha256,filename,status,created_at FROM imports WHERE project_id=? ORDER BY version DESC", (pid,)).fetchall()
-    return [dict(r) for r in rows]
+        rows = c.execute(
+            "SELECT id,project_id,version,sha256,filename,status,created_at,analysis "
+            "FROM imports WHERE project_id=? ORDER BY version DESC",
+            (pid,),
+        ).fetchall()
+    return [_import_summary_row(r) for r in rows]
 
 
 @app.get("/api/imports/{iid}")
 def get_import(iid: int) -> dict:
     r = import_or_404(iid)
     a = r.pop("analysis")
-    r["summary"], r["diagnostics"] = a["summary"], a["diagnostics"]
+    r["summary"] = a.get("summary", {})
+    r["diagnostics"] = a.get("diagnostics", [])
+    r["risks"] = a.get("risks", [])
+    r["jobs"] = a.get("jobs", [])
+    r["files"] = a.get("files", [])
     return r
 
 
 @app.get("/api/projects/{pid}/catalog")
 def catalog(pid: int, version: int | None = None, layer: str | None = None, search: str | None = None) -> dict:
     a, meta = latest_analysis(pid, version)
-    tables = a["tables"]
+    tables = [_merge_table_metadata(pid, t) for t in a["tables"]]
     if layer:
         tables = [t for t in tables if t["layer"].lower() == layer.lower()]
     if search:
@@ -763,6 +1304,375 @@ def catalog(pid: int, version: int | None = None, layer: str | None = None, sear
 def tables_alias(pid: int, version: int | None = None, layer: str | None = None, search: str | None = None) -> dict:
     """Frontend-friendly alias for the catalog endpoint."""
     return catalog(pid, version, layer, search)
+
+
+@app.get("/api/projects/{pid}/tables/{table_name:path}/detail")
+def table_detail(pid: int, table_name: str, version: int | None = None) -> dict:
+    a, meta = latest_analysis(pid, version)
+    table = _merge_table_metadata(pid, _find_table_or_404(a, table_name))
+    latest_meta_revision = _latest_metadata_revision(pid)
+    canonical_name = table["name"]
+    metric_names = {m["name"].lower() for m in a.get("metrics", []) if m.get("table") == canonical_name}
+    column_meta = _column_metadata_map(pid)
+    upstream = sorted({e["source"] for e in a.get("table_lineage", []) if e["target"] == canonical_name})
+    downstream = sorted({e["target"] for e in a.get("table_lineage", []) if e["source"] == canonical_name})
+    operation_list = [op for op in a.get("operations", []) if op.get("target") == canonical_name]
+    related_metrics = [m for m in a.get("metrics", []) if m.get("table") == canonical_name]
+    operation_files = sorted({op.get("file") for op in operation_list if op.get("file")})
+    related_risks = [
+        risk for risk in a.get("risks", [])
+        if risk.get("file") in operation_files or risk.get("file") == table.get("ddl_file")
+    ]
+    incoming_columns = {}
+    for edge in a.get("column_lineage", []):
+        target = str(edge.get("target", ""))
+        prefix = canonical_name + "."
+        if target.startswith(prefix):
+            field_name = target[len(prefix):]
+            incoming_columns.setdefault(field_name, []).append(edge)
+    fields = []
+    for column in table.get("columns", []):
+        field_name = column["name"]
+        meta_patch = column_meta.get((canonical_name.lower(), field_name.lower()), {})
+        lineage_rows = incoming_columns.get(field_name, [])
+        source_tables = sorted({row["source"].rsplit(".", 1)[0] for row in lineage_rows if "." in row["source"]})
+        source_fields = sorted({row["source"] for row in lineage_rows})
+        expressions = [row.get("expression") for row in lineage_rows if row.get("expression")]
+        fields.append({
+            "name": field_name,
+            "type": column.get("type"),
+            "role": column.get("role"),
+            "semantic_type": column.get("semantic_type"),
+            "nullable": column.get("nullable"),
+            "kind": _field_kind(column, metric_names),
+            "display_name": meta_patch.get("display_name", ""),
+            "note": meta_patch.get("note", ""),
+            "business_tag": meta_patch.get("business_tag", ""),
+            "source_tables": source_tables,
+            "source_fields": source_fields,
+            "expression": expressions[0] if expressions else None,
+            "lineage_count": len(lineage_rows),
+        })
+    dws = table.get("dws") or {}
+    grain_candidates = []
+    time_candidates = []
+    for metric in related_metrics:
+        grain_candidates.extend(metric.get("grain") or [])
+    for field in fields:
+        if field["kind"] == "time":
+            time_candidates.append(field["name"])
+    evidence = []
+    if table.get("ddl_file"):
+        evidence.append({
+            "type": "ddl",
+            "file": table["ddl_file"],
+            "line": None,
+            "summary": "DDL 定义",
+        })
+    for op in operation_list[:5]:
+        evidence.append({
+            "type": "etl",
+            "file": op.get("file"),
+            "line": op.get("line"),
+            "summary": f"{op.get('type', 'write')} {op.get('target')}",
+            "sources": op.get("sources", []),
+            "group_by": op.get("group_by", []),
+            "where": op.get("where"),
+        })
+    return {
+        "version": meta["version"],
+        "metadata_revision": latest_meta_revision,
+        "import_meta": {
+            "version": meta["version"],
+            "created_at": meta.get("created_at"),
+            "status": meta.get("status"),
+            "filename": meta.get("filename"),
+        },
+        "table": {
+            "name": canonical_name,
+            "layer": table.get("layer"),
+            "description": table.get("comment") or table.get("description") or "",
+            "display_name": table.get("display_name", ""),
+            "owner": table.get("owner", ""),
+            "update_frequency": table.get("update_frequency", ""),
+            "retention": table.get("retention", ""),
+            "note": table.get("note", ""),
+            "ddl_file": table.get("ddl_file"),
+            "parse_source": table.get("parse_source"),
+            "confidence": table.get("confidence"),
+            "partition_type": dws.get("partition_type"),
+            "partition_columns": dws.get("partition_columns", []),
+            "distribute_columns": dws.get("distribute_columns", []),
+            "grain": sorted({str(x) for x in grain_candidates if x}),
+            "time_fields": sorted(set(time_candidates)),
+            "upstream_count": len(upstream),
+            "downstream_count": len(downstream),
+            "upstream_tables": upstream,
+            "downstream_tables": downstream,
+            "column_count": len(table.get("columns", [])),
+            "metric_count": len(related_metrics),
+            "risk_count": len(related_risks),
+        },
+        "fields": fields,
+        "metrics": related_metrics,
+        "risks": related_risks,
+        "evidence": evidence,
+        "operations": [
+            {
+                "type": op.get("type"),
+                "file": op.get("file"),
+                "line": op.get("line"),
+                "sources": op.get("sources", []),
+                "group_by": op.get("group_by", []),
+                "where": op.get("where"),
+                "projection_count": len(op.get("projections", [])),
+            }
+            for op in operation_list
+        ],
+    }
+
+
+@app.put("/api/projects/{pid}/dictionary/bulk")
+def save_dictionary_bulk(pid: int, payload: DictionaryBulkSaveIn) -> dict:
+    project_or_404(pid)
+    analysis, meta = latest_analysis(pid)
+    preview = _build_dictionary_bulk_preview(pid, payload, analysis, meta["version"])
+    known_tables = {
+        str(table.get("name", "")).lower(): {
+            str(column.get("name", "")).lower() for column in table.get("columns", [])
+        }
+        for table in analysis.get("tables", [])
+    }
+    missing_tables = preview["skipped"]["missing_tables"]
+    missing_columns = preview["skipped"]["missing_columns"]
+    ts = now()
+    saved_tables = 0
+    saved_columns = 0
+    touched_tables: set[str] = set()
+    with db() as c:
+        for item in payload.tables:
+            table_name = item.table_name.strip().lower()
+            if not table_name or table_name in missing_tables:
+                continue
+            touched_tables.add(table_name)
+            c.execute(
+                """INSERT INTO table_metadata(project_id,table_name,display_name,owner,update_frequency,retention,note,modified_at)
+                   VALUES(?,?,?,?,?,?,?,?)
+                   ON CONFLICT(project_id,table_name) DO UPDATE SET
+                     display_name=excluded.display_name,
+                     owner=excluded.owner,
+                     update_frequency=excluded.update_frequency,
+                     retention=excluded.retention,
+                     note=excluded.note,
+                     modified_at=excluded.modified_at""",
+                (
+                    pid,
+                    table_name,
+                    item.display_name.strip(),
+                    item.owner.strip(),
+                    item.update_frequency.strip(),
+                    item.retention.strip(),
+                    item.note.strip(),
+                    ts,
+                ),
+            )
+            saved_tables += 1
+        for item in payload.columns:
+            table_name = item.table_name.strip().lower()
+            column_name = item.column_name.strip().lower()
+            if not table_name or not column_name:
+                continue
+            if table_name in missing_tables or f"{table_name}.{column_name}" in missing_columns:
+                continue
+            touched_tables.add(table_name)
+            c.execute(
+                """INSERT INTO column_metadata(project_id,table_name,column_name,display_name,note,business_tag,modified_at)
+                   VALUES(?,?,?,?,?,?,?)
+                   ON CONFLICT(project_id,table_name,column_name) DO UPDATE SET
+                     display_name=excluded.display_name,
+                     note=excluded.note,
+                     business_tag=excluded.business_tag,
+                     modified_at=excluded.modified_at""",
+                (
+                    pid,
+                    table_name,
+                    column_name,
+                    item.display_name.strip(),
+                    item.note.strip(),
+                    item.business_tag.strip(),
+                    ts,
+                ),
+            )
+            saved_columns += 1
+    revision_meta = None
+    if saved_tables or saved_columns:
+        revision_meta = _create_metadata_revision(pid, meta["version"], preview, payload.revision_meta)
+    return {
+        "project_id": pid,
+        "version": meta["version"],
+        "saved_tables": saved_tables,
+        "saved_columns": saved_columns,
+        "touched_tables": sorted(touched_tables),
+        "metadata_revision": revision_meta,
+        "preview": preview,
+        "skipped": {
+            "missing_tables": missing_tables,
+            "missing_columns": missing_columns,
+        },
+        "modified_at": ts,
+    }
+
+
+@app.post("/api/projects/{pid}/dictionary/bulk/preview")
+def preview_dictionary_bulk(pid: int, payload: DictionaryBulkSaveIn) -> dict:
+    project_or_404(pid)
+    analysis, meta = latest_analysis(pid)
+    preview = _build_dictionary_bulk_preview(pid, payload, analysis, meta["version"])
+    preview["requires_confirmation"] = bool(
+        preview["changes"]["tables"] or preview["changes"]["columns"]
+    )
+    return preview
+
+
+@app.get("/api/projects/{pid}/metadata/revisions")
+def list_metadata_revisions(pid: int) -> dict:
+    project_or_404(pid)
+    return {
+        "project_id": pid,
+        "revisions": _metadata_revision_rows(pid),
+    }
+
+
+@app.get("/api/projects/{pid}/metadata/compare")
+def compare_metadata_revisions(pid: int, left: int, right: int) -> dict:
+    project_or_404(pid)
+    revisions = {item["revision"]: item for item in _metadata_revision_rows(pid)}
+    if left not in revisions or right not in revisions:
+        raise HTTPException(404, "metadata revision not found")
+    compared = _compare_metadata_revisions(pid, left, right)
+    return {
+        "project_id": pid,
+        "left_revision": revisions[left],
+        "right_revision": revisions[right],
+        **compared,
+        "compare_scope": "metadata_revision",
+    }
+
+
+@app.get("/api/projects/{pid}/tables/{table_name:path}/compare")
+def compare_single_table(pid: int, table_name: str, left: int, right: int) -> dict:
+    left_analysis, left_meta = latest_analysis(pid, left)
+    right_analysis, right_meta = latest_analysis(pid, right)
+    left_table = _find_table_or_404(left_analysis, table_name)
+    right_table = _find_table_or_404(right_analysis, table_name)
+    column_diff = _column_diffs(left_table, right_table)
+    left_metrics = [m for m in left_analysis.get("metrics", []) if m.get("table") == left_table["name"]]
+    right_metrics = [m for m in right_analysis.get("metrics", []) if m.get("table") == right_table["name"]]
+    left_metric_map = {m["name"]: m for m in left_metrics}
+    right_metric_map = {m["name"]: m for m in right_metrics}
+    metric_changes = []
+    for key in sorted(set(left_metric_map) & set(right_metric_map)):
+        before = left_metric_map[key]
+        after = right_metric_map[key]
+        delta = {}
+        for field in ("formula", "filter", "grain"):
+            if before.get(field) != after.get(field):
+                delta[field] = {"before": before.get(field), "after": after.get(field)}
+        if delta:
+            metric_changes.append({"name": key, "changes": delta})
+    diff_items = _compare_table_fields(left_table, right_table)
+    for name in sorted(set(right_metric_map) - set(left_metric_map)):
+        diff_items.append({
+            "scope": "metric",
+            "table": right_table["name"],
+            "object": f"{right_table['name']}::{name}",
+            "change_type": "added",
+            "before": None,
+            "after": right_metric_map[name],
+        })
+    for name in sorted(set(left_metric_map) - set(right_metric_map)):
+        diff_items.append({
+            "scope": "metric",
+            "table": left_table["name"],
+            "object": f"{left_table['name']}::{name}",
+            "change_type": "removed",
+            "before": left_metric_map[name],
+            "after": None,
+        })
+    for changed in metric_changes:
+        diff_items.append({
+            "scope": "metric",
+            "table": right_table["name"],
+            "object": f"{right_table['name']}::{changed['name']}",
+            "change_type": "changed",
+            "before": changed["changes"],
+            "after": changed["changes"],
+            "details": changed["changes"],
+        })
+    table_meta = _table_metadata_map(pid).get(table_name.lower(), {})
+    latest_meta_revision = _latest_metadata_revision(pid)
+    return {
+        "table_name": table_name,
+        "left": left_meta["version"],
+        "right": right_meta["version"],
+        "summary": {
+            "column_added": len(column_diff["added"]),
+            "column_removed": len(column_diff["removed"]),
+            "column_changed": len(column_diff["changed"]),
+            "metric_added": len(set(right_metric_map) - set(left_metric_map)),
+            "metric_removed": len(set(left_metric_map) - set(right_metric_map)),
+            "metric_changed": len(metric_changes),
+            "diff_items": len(diff_items),
+        },
+        "table_metadata": {
+            "display_name": table_meta.get("display_name", ""),
+            "owner": table_meta.get("owner", ""),
+            "update_frequency": table_meta.get("update_frequency", ""),
+            "retention": table_meta.get("retention", ""),
+            "note": table_meta.get("note", ""),
+        },
+        "metadata_revision": latest_meta_revision,
+        "columns": column_diff,
+        "metrics": {
+            "added": sorted(set(right_metric_map) - set(left_metric_map)),
+            "removed": sorted(set(left_metric_map) - set(right_metric_map)),
+            "changed": metric_changes,
+        },
+        "diff_items": diff_items,
+        "compare_scope": "table",
+    }
+
+
+@app.get("/api/projects/{pid}/dictionary/export")
+def export_dictionary(pid: int, version: int | None = None, format: str = "csv"):
+    a, meta = latest_analysis(pid, version)
+    rows = _dictionary_rows(pid, a)
+    latest_meta_revision = _latest_metadata_revision(pid)
+    fmt = format.strip().lower()
+    if fmt == "json":
+        return {
+            "project_id": pid,
+            "version": meta["version"],
+            "metadata_revision": latest_meta_revision,
+            "row_count": len(rows),
+            "rows": rows,
+        }
+    if fmt != "csv":
+        raise HTTPException(422, "format must be csv or json")
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=list(rows[0].keys()) if rows else [
+        "table_name", "table_display_name", "layer", "owner", "update_frequency", "retention",
+        "table_note", "column_name", "column_display_name", "column_type", "role",
+        "semantic_type", "business_tag", "column_note"
+    ])
+    writer.writeheader()
+    writer.writerows(rows)
+    blob = buf.getvalue().encode("utf-8-sig")
+    return StreamingResponse(
+        io.BytesIO(blob),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="data-dictionary-project-{pid}-v{meta["version"]}.csv"'},
+    )
 
 
 @app.get("/api/projects/{pid}/lineage")
@@ -814,10 +1724,25 @@ def impact(pid: int, change: ChangeIn, version: int | None = None) -> dict:
     ads = sorted(x for x in seen if layer_of(x) == "ADS")
     severity = "high" if change.change_type in {"delete_column", "rename_column", "group_by_change", "filter_change"} or len(seen) > 5 else "medium" if direct else "low"
     warnings = [r for r in a["risks"] if not r.get("file") or r.get("file") in scripts]
+    diff_evidence = []
+    evidence_scope = None
+    if change.compare_scope == "metadata_revision" and change.left_revision and change.right_revision:
+        evidence_scope = "metadata_revision"
+        diff_evidence = _filter_diff_items_for_object(
+            _compare_metadata_revisions(pid, change.left_revision, change.right_revision)["diff_items"],
+            change.object,
+        )
+    elif change.compare_scope == "project" and change.left_version and change.right_version:
+        evidence_scope = "project"
+        compared = compare(pid, change.left_version, change.right_version)
+        diff_evidence = _filter_diff_items_for_object(compared.get("diff_items", []), change.object)
+    latest_meta_revision = _latest_metadata_revision(pid)
     return {"version": meta["version"], "change": change.model_dump(), "risk": severity,
             "direct_impacts": direct, "transitive_impacts": sorted(seen - {table}),
             "paths": paths, "scripts": scripts, "metrics": metric_names, "ads_tables": ads,
-            "warnings": warnings, "recommendations": [
+            "warnings": warnings, "diff_evidence": diff_evidence, "evidence_scope": evidence_scope,
+            "metadata_revision": latest_meta_revision,
+            "recommendations": [
                 "update target DDL and writer SQL first", "update downstream transformations in topological order",
                 "run schema and metric regression checks", "backfill affected partitions when historical semantics change"]}
 
@@ -826,18 +1751,192 @@ def impact(pid: int, change: ChangeIn, version: int | None = None) -> dict:
 def compare(pid: int, left: int, right: int) -> dict:
     a, lm = latest_analysis(pid, left)
     b, rm = latest_analysis(pid, right)
+    latest_meta_revision = _latest_metadata_revision(pid)
     at, bt = {x["name"]: x for x in a["tables"]}, {x["name"]: x for x in b["tables"]}
     changed = []
+    diff_items = []
+    for n in sorted(set(bt) - set(at)):
+        diff_items.append({
+            "scope": "table",
+            "table": n,
+            "object": n,
+            "change_type": "added",
+            "before": None,
+            "after": _table_snapshot(bt[n]),
+        })
+    for n in sorted(set(at) - set(bt)):
+        diff_items.append({
+            "scope": "table",
+            "table": n,
+            "object": n,
+            "change_type": "removed",
+            "before": _table_snapshot(at[n]),
+            "after": None,
+        })
     for n in sorted(set(at) & set(bt)):
-        ac = {(c["name"], c["type"]) for c in at[n]["columns"]}
-        bc = {(c["name"], c["type"]) for c in bt[n]["columns"]}
-        if ac != bc:
-            changed.append({"table": n, "added_columns": sorted(bc - ac), "removed_columns": sorted(ac - bc)})
+        column_changes = _column_diffs(at[n], bt[n])
+        structural_delta = {}
+        for key in ("ddl_file", "layer"):
+            if at[n].get(key) != bt[n].get(key):
+                structural_delta[key] = {"before": at[n].get(key), "after": bt[n].get(key)}
+        left_dws, right_dws = at[n].get("dws") or {}, bt[n].get("dws") or {}
+        if left_dws.get("partition_columns") != right_dws.get("partition_columns"):
+            structural_delta["partition_columns"] = {
+                "before": left_dws.get("partition_columns", []),
+                "after": right_dws.get("partition_columns", []),
+            }
+        if left_dws.get("partition_type") != right_dws.get("partition_type"):
+            structural_delta["partition_type"] = {
+                "before": left_dws.get("partition_type"),
+                "after": right_dws.get("partition_type"),
+            }
+        if column_changes["added"] or column_changes["removed"] or column_changes["changed"] or structural_delta:
+            changed.append({
+                "table": n,
+                "before": _table_snapshot(at[n]),
+                "after": _table_snapshot(bt[n]),
+                "columns": column_changes,
+                "structure": structural_delta,
+            })
+            diff_items.append({
+                "scope": "table",
+                "table": n,
+                "object": n,
+                "change_type": "changed",
+                "before": _table_snapshot(at[n]),
+                "after": _table_snapshot(bt[n]),
+                "details": {
+                    "structure": structural_delta,
+                    "columns": column_changes,
+                },
+            })
+            diff_items.extend(_compare_table_fields(at[n], bt[n]))
     edgekey = lambda x: (x["source"], x["target"])
     ae, be = {edgekey(x) for x in a["table_lineage"]}, {edgekey(x) for x in b["table_lineage"]}
-    return {"left": lm["version"], "right": rm["version"], "tables": {
-        "added": sorted(set(bt) - set(at)), "removed": sorted(set(at) - set(bt)), "changed": changed},
-        "lineage": {"added": sorted(be - ae), "removed": sorted(ae - be)}}
+    left_metrics = {_metric_signature(m): m for m in a.get("metrics", [])}
+    right_metrics = {_metric_signature(m): m for m in b.get("metrics", [])}
+    left_metric_names = {m["table"] + "::" + m["name"]: m for m in a.get("metrics", [])}
+    right_metric_names = {m["table"] + "::" + m["name"]: m for m in b.get("metrics", [])}
+    metric_changed = []
+    for key in sorted(set(left_metric_names) & set(right_metric_names)):
+        before = left_metric_names[key]
+        after = right_metric_names[key]
+        delta = {}
+        for field in ("formula", "filter", "grain"):
+            if before.get(field) != after.get(field):
+                delta[field] = {"before": before.get(field), "after": after.get(field)}
+        if delta:
+            metric_changed.append({
+                "metric": key,
+                "table": after.get("table"),
+                "name": after.get("name"),
+                "changes": delta,
+            })
+            diff_items.append({
+                "scope": "metric",
+                "table": after.get("table"),
+                "object": key,
+                "change_type": "changed",
+                "before": delta,
+                "after": delta,
+                "details": delta,
+            })
+    left_risks = {_risk_signature(r): r for r in a.get("risks", [])}
+    right_risks = {_risk_signature(r): r for r in b.get("risks", [])}
+    left_ops = {(op.get("target"), op.get("file"), op.get("type")): op for op in a.get("operations", [])}
+    right_ops = {(op.get("target"), op.get("file"), op.get("type")): op for op in b.get("operations", [])}
+    for key in sorted(set(right_metrics) - set(left_metrics)):
+        metric = right_metrics[key]
+        diff_items.append({
+            "scope": "metric",
+            "table": metric.get("table"),
+            "object": f"{metric.get('table')}::{metric.get('name')}",
+            "change_type": "added",
+            "before": None,
+            "after": metric,
+        })
+    for key in sorted(set(left_metrics) - set(right_metrics)):
+        metric = left_metrics[key]
+        diff_items.append({
+            "scope": "metric",
+            "table": metric.get("table"),
+            "object": f"{metric.get('table')}::{metric.get('name')}",
+            "change_type": "removed",
+            "before": metric,
+            "after": None,
+        })
+    for source, target in sorted(be - ae):
+        diff_items.append({
+            "scope": "lineage",
+            "table": target,
+            "object": f"{source}->{target}",
+            "change_type": "added",
+            "before": None,
+            "after": {"source": source, "target": target},
+        })
+    for source, target in sorted(ae - be):
+        diff_items.append({
+            "scope": "lineage",
+            "table": target,
+            "object": f"{source}->{target}",
+            "change_type": "removed",
+            "before": {"source": source, "target": target},
+            "after": None,
+        })
+    impacted_ads = sorted({
+        edge[1]
+        for edge in (be - ae)
+        if layer_of(edge[1]) == "ADS"
+    })
+    table_scope = sorted({item["table"] for item in diff_items if item.get("table")})
+    return {
+        "left": lm["version"],
+        "right": rm["version"],
+        "summary": {
+            "tables_added": len(set(bt) - set(at)),
+            "tables_removed": len(set(at) - set(bt)),
+            "tables_changed": len(changed),
+            "lineage_added": len(be - ae),
+            "lineage_removed": len(ae - be),
+            "metrics_added": len(set(right_metrics) - set(left_metrics)),
+            "metrics_removed": len(set(left_metrics) - set(right_metrics)),
+            "metrics_changed": len(metric_changed),
+            "risks_added": len(set(right_risks) - set(left_risks)),
+            "risks_removed": len(set(left_risks) - set(right_risks)),
+            "ops_added": len(set(right_ops) - set(left_ops)),
+            "ops_removed": len(set(left_ops) - set(right_ops)),
+            "impacted_ads": len(impacted_ads),
+            "diff_items": len(diff_items),
+            "changed_tables_scope": len(table_scope),
+        },
+        "tables": {
+            "added": [_table_snapshot(bt[n]) for n in sorted(set(bt) - set(at))],
+            "removed": [_table_snapshot(at[n]) for n in sorted(set(at) - set(bt))],
+            "changed": changed,
+        },
+        "lineage": {
+            "added": [{"source": s, "target": t} for s, t in sorted(be - ae)],
+            "removed": [{"source": s, "target": t} for s, t in sorted(ae - be)],
+        },
+        "metrics": {
+            "added": [right_metrics[k] for k in sorted(set(right_metrics) - set(left_metrics))],
+            "removed": [left_metrics[k] for k in sorted(set(left_metrics) - set(right_metrics))],
+            "changed": metric_changed,
+        },
+        "risks": {
+            "added": [right_risks[k] for k in sorted(set(right_risks) - set(left_risks))],
+            "removed": [left_risks[k] for k in sorted(set(left_risks) - set(right_risks))],
+        },
+        "operations": {
+            "added": [right_ops[k] for k in sorted(set(right_ops) - set(left_ops))],
+            "removed": [left_ops[k] for k in sorted(set(left_ops) - set(right_ops))],
+        },
+        "impacted_ads": impacted_ads,
+        "diff_items": diff_items,
+        "table_names_in_scope": table_scope,
+        "metadata_revision": latest_meta_revision,
+        "compare_scope": "project",
+    }
 
 
 @app.post("/api/projects/{pid}/assistant/query")
@@ -884,7 +1983,8 @@ from app.parser.single_table import (
 class SingleTableImportRequest(BaseModel):
     ddl: str
     etl_sql: str = ""                  # 可选：加工 SQL，提供时精准解析血缘
-    conflict_strategy: str = "check"   # "check" | "replace" | "keep" | "merge"
+    conflict_strategy: str = "check"   # "check" | "replace" | "keep" | "merge" | "merge_inferred" | "accept_orphan" | "confirm_precise"
+    confirmed_relation_index: int | None = None
 
 
 @app.post("/api/projects/{pid}/tables/import")
@@ -911,13 +2011,23 @@ def import_single_table_endpoint(pid: int, req: SingleTableImportRequest) -> dic
         existing = json.loads(dict(row)["analysis"])
         latest_version = row["version"]
 
+    raw_strategy = (req.conflict_strategy or "check").strip().lower()
+    strategy = {"accept_orphan": "keep", "confirm_precise": "merge"}.get(raw_strategy, raw_strategy)
+
     result = import_single_table(
         ddl_text=req.ddl,
         project_id=pid,
         existing_analysis=existing,
-        conflict_strategy=req.conflict_strategy,
+        conflict_strategy=strategy,
         etl_sql=req.etl_sql if req.etl_sql else None,
     )
+
+    if (
+        strategy == "merge_inferred"
+        and req.confirmed_relation_index is not None
+        and 0 <= req.confirmed_relation_index < len(result.inferred_relations)
+    ):
+        result.inferred_relations = [result.inferred_relations[req.confirmed_relation_index]]
 
     # 推断结果格式化
     def _relations_out():
@@ -930,9 +2040,57 @@ def import_single_table_endpoint(pid: int, req: SingleTableImportRequest) -> dic
                 "matched_columns": r.matched_columns[:20],
                 "confidence": r.confidence,
                 "inference_method": r.inference_method,
+                "selected": req.confirmed_relation_index == i,
             }
             for i, r in enumerate(result.inferred_relations)
         ]
+
+    def _table_out():
+        return {
+            "name": result.table_name,
+            "layer": result.table_info["layer"] if result.table_info else "?",
+            "columns": [{"name": c["name"], "type": c["type"]} for c in (result.table_info["columns"] if result.table_info else [])],
+            "column_count": len(result.table_info["columns"]) if result.table_info else 0,
+        }
+
+    def _missing_upstream_tables() -> list[str]:
+        if not existing:
+            existing_cat = {}
+        else:
+            existing_cat = {t["name"]: t for t in existing.get("tables", [])}
+        etl_sources = {e["source"] for e in result.table_lineage}
+        return sorted(s for s in etl_sources if s not in existing_cat and s != result.table_name)
+
+    def _navigation_out(default_page: str) -> dict:
+        return {"project_id": pid, "page": default_page, "table_name": result.table_name}
+
+    def _decision_out() -> dict:
+        action = result.action
+        if action == "conflict":
+            return {
+                "stage": "conflict_resolution",
+                "available_strategies": ["replace", "keep", "merge"],
+                "recommended_strategy": "merge",
+                "hint": "请先查看共同列、新增列、删除列和类型变化，再选择冲突策略。",
+            }
+        if action == "ready_to_import_precise":
+            return {
+                "stage": "precise_import_confirmation",
+                "available_strategies": ["confirm_precise"],
+                "recommended_strategy": "confirm_precise",
+                "hint": "已完成精确解析；确认后会落一个新版本并刷新项目血缘。",
+            }
+        if action == "orphan_pending":
+            available = ["accept_orphan"]
+            if result.inferred_relations:
+                available.insert(0, "merge_inferred")
+            return {
+                "stage": "orphan_or_inferred_confirmation",
+                "available_strategies": available,
+                "recommended_strategy": available[0],
+                "hint": "如果推断关系可信，建议确认一条推断关系导入；否则可作为孤立表先入库。",
+            }
+        return {}
 
     # ↓ 三种不需要写库的返回场景 ↓
 
@@ -941,13 +2099,15 @@ def import_single_table_endpoint(pid: int, req: SingleTableImportRequest) -> dic
         return {
             "table_name": result.table_name,
             "action": result.action,
+            "table": _table_out(),
             "conflict": result.conflict.__dict__ if result.conflict else None,
             "table_lineage": result.table_lineage,
             "column_lineage": result.column_lineage,
             "inferred_relations": _relations_out(),
             "message": result.message,
             "requires_decision": True,
-            "available_strategies": ["replace", "keep", "merge"],
+            **_decision_out(),
+            "navigation": _navigation_out("assets"),
         }
 
     # B. 仅 DDL、check 模式 → 返回推断给用户判断
@@ -955,45 +2115,28 @@ def import_single_table_endpoint(pid: int, req: SingleTableImportRequest) -> dic
         return {
             "table_name": result.table_name,
             "action": result.action,
-            "table": {
-                "name": result.table_name,
-                "layer": result.table_info["layer"] if result.table_info else "?",
-                "columns": [{"name": c["name"], "type": c["type"]} for c in (result.table_info["columns"] if result.table_info else [])],
-            },
+            "table": _table_out(),
             "inferred_relations": _relations_out(),
             "message": result.message,
             "requires_decision": True,
-            "options": [
-                "accept_orphan: 作为孤立表接受（无血缘）",
-                "confirm_inference: 选定一个推断关系确认入库",
-                "provide_etl: 补充 ETL SQL 后重新导入",
-            ],
+            **_decision_out(),
+            "navigation": _navigation_out("assets"),
         }
 
     # C. DDL + ETL check 模式 → 解析完成预览，等用户确认
     if result.action == "ready_to_import_precise":
-        # 检查上游表是否已在数据字典中
-        existing_cat = {}
-        if existing:
-            for t in existing.get("tables", []):
-                existing_cat[t["name"]] = t
-        etl_sources = {e["source"] for e in result.table_lineage}
-        missing_upstream = sorted(s for s in etl_sources
-                                if s not in existing_cat and s != result.table_name)
         return {
             "table_name": result.table_name,
             "action": result.action,
-            "table": {
-                "name": result.table_name,
-                "layer": result.table_info["layer"] if result.table_info else "?",
-                "columns": len(result.table_info["columns"]) if result.table_info else 0,
-            },
+            "table": _table_out(),
             "table_lineage": result.table_lineage,
             "column_lineage_count": len(result.column_lineage),
             "column_lineage": result.column_lineage[:20],
-            "missing_upstream_tables": missing_upstream,
+            "missing_upstream_tables": _missing_upstream_tables(),
             "message": result.message,
             "requires_decision": True,
+            **_decision_out(),
+            "navigation": _navigation_out("lineage"),
         }
 
     # ↓ 入库场景 ↓
@@ -1040,16 +2183,20 @@ def import_single_table_endpoint(pid: int, req: SingleTableImportRequest) -> dic
     return {
         "table_name": result.table_name,
         "action": result.action,
+        "table": _table_out(),
         "conflict": result.conflict.__dict__ if result.conflict else None,
-        "lineage_source": "parsed_from_sql" if "sqlglot_ast" in lineage_sources else
+        "lineage_source": "parsed_from_sql" if lineage_sources & {"sqlglot_ast", "regex_fallback"} else
                          "inferred" if "inferred" in lineage_sources else
                          "none",
         "table_lineage": result.table_lineage,
         "column_lineage": result.column_lineage,
         "inferred_relations": _relations_out(),
+        "missing_upstream_tables": _missing_upstream_tables(),
         "version": new_version,
         "summary": new_analysis["summary"],
         "message": result.message,
+        "requires_decision": False,
+        "navigation": _navigation_out("assets"),
     }
 
 
@@ -1102,57 +2249,106 @@ def get_table_relationships(pid: int, table_name: str, version: int | None = Non
 
 @app.post("/api/projects/{pid}/tables/preview")
 def preview_table_ddl(pid: int, payload: dict = Body(...)) -> dict:
-    """预处理单条 DDL，返回解析结果和冲突/关系预览（不写库）。"""
+    """预处理单条 DDL/可选 ETL，返回解析结果和冲突/关系预览（不写库）。"""
     ddl_text = str(payload.get("ddl", "")).strip()
+    etl_sql = str(payload.get("etl_sql", "")).strip()
     if not ddl_text:
         raise HTTPException(422, "ddl is required")
 
-    from app.parser.ddl_parser import parse_ddl as ast_parse_ddl
-
-    tables = ast_parse_ddl(ddl_text, "__preview__")
-    if not tables:
-        raise HTTPException(400, "DDL 解析失败：未识别到有效的 CREATE TABLE 语句")
-
-    table_info = tables[0]
-
     # 获取现有 catalog
     existing_catalog = {}
+    existing_analysis = None
     with db() as c:
         row = c.execute(
             "SELECT * FROM imports WHERE project_id=? ORDER BY version DESC LIMIT 1",
             (pid,),
         ).fetchone()
     if row:
-        analysis = json.loads(dict(row)["analysis"])
-        for t in analysis.get("tables", []):
+        existing_analysis = json.loads(dict(row)["analysis"])
+        for t in existing_analysis.get("tables", []):
             existing_catalog[t["name"]] = t
 
-    # 冲突检测
-    from app.parser.single_table import check_conflict
-    conflict = check_conflict(table_info["name"], table_info["columns"], existing_catalog)
+    result = import_single_table(
+        ddl_text=ddl_text,
+        project_id=pid,
+        existing_analysis=existing_analysis,
+        conflict_strategy="check",
+        etl_sql=etl_sql or None,
+    )
 
-    # 关系推断
-    relations = infer_relationships(
-        table_info["name"], table_info["columns"], existing_catalog)
+    def _table_out() -> dict:
+        table_info = result.table_info or {}
+        return {
+            "name": result.table_name,
+            "layer": table_info.get("layer", "?"),
+            "columns": [
+                {
+                    "name": c["name"],
+                    "type": c["type"],
+                    "role": c.get("role", "unknown"),
+                }
+                for c in table_info.get("columns", [])
+            ],
+            "column_count": len(table_info.get("columns", [])),
+        }
 
-    return {
-        "table": {
-            "name": table_info["name"],
-            "layer": table_info["layer"],
-            "columns": [{"name": c["name"], "type": c["type"],
-                        "role": c.get("role", "unknown")}
-                       for c in table_info["columns"]],
-        },
-        "conflict": conflict.__dict__ if conflict else None,
-        "inferred_relations": [
+    def _relations_out() -> list[dict]:
+        return [
             {
+                "index": i,
                 "source_table": r.source_table,
                 "target_table": r.target_table,
                 "matched_columns_count": len(r.matched_columns),
+                "matched_columns": r.matched_columns[:20],
                 "confidence": r.confidence,
                 "inference_method": r.inference_method,
             }
-            for r in relations
-        ],
-        "total_relations_found": len(relations),
+            for i, r in enumerate(result.inferred_relations)
+        ]
+
+    def _missing_upstream_tables() -> list[str]:
+        etl_sources = {e["source"] for e in result.table_lineage}
+        return sorted(
+            s for s in etl_sources if s not in existing_catalog and s != result.table_name
+        )
+
+    def _decision_out() -> dict:
+        if result.action == "conflict":
+            return {
+                "stage": "conflict_resolution",
+                "available_strategies": ["replace", "keep", "merge"],
+                "recommended_strategy": "merge",
+                "hint": "请先查看共同列、新增列、删除列和类型变化，再选择冲突策略。",
+            }
+        if result.action == "ready_to_import_precise":
+            return {
+                "stage": "precise_import_confirmation",
+                "available_strategies": ["confirm_precise"],
+                "recommended_strategy": "confirm_precise",
+                "hint": "已完成精确解析；确认后会落一个新版本并刷新项目血缘。",
+            }
+        available = ["accept_orphan"]
+        if result.inferred_relations:
+            available.insert(0, "merge_inferred")
+        return {
+            "stage": "orphan_or_inferred_confirmation",
+            "available_strategies": available,
+            "recommended_strategy": available[0],
+            "hint": "如果推断关系可信，建议确认一条推断关系导入；否则可作为孤立表先入库。",
+        }
+
+    return {
+        "table_name": result.table_name,
+        "action": result.action,
+        "table": _table_out(),
+        "conflict": result.conflict.__dict__ if result.conflict else None,
+        "table_lineage": result.table_lineage,
+        "column_lineage_count": len(result.column_lineage),
+        "column_lineage": result.column_lineage[:20],
+        "missing_upstream_tables": _missing_upstream_tables(),
+        "inferred_relations": _relations_out(),
+        "total_relations_found": len(result.inferred_relations),
+        "requires_decision": result.action in {"conflict", "orphan_pending", "ready_to_import_precise"},
+        "message": result.message,
+        **_decision_out(),
     }

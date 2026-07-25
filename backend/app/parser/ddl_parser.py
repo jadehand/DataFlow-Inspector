@@ -13,8 +13,12 @@ import logging
 import re
 from typing import Any
 
-import sqlglot
-from sqlglot import exp
+try:
+    import sqlglot
+    from sqlglot import exp
+except ModuleNotFoundError:  # Optional at runtime; parser falls back to regex.
+    sqlglot = None
+    exp = None
 
 from .dialect_dws import DWSTableInfo, extract_dws_info, get_dialect
 from .regex_fallback import classify_column, layer_of, parse_ddl as regex_parse_ddl
@@ -30,6 +34,13 @@ def parse_ddl(text: str, path: str) -> list[dict[str, Any]]:
     输出格式兼容旧版，新增 dws_info 字段。
     """
     # 按语句拆分，逐个解析（单条失败不影响其他）
+    if sqlglot is None or exp is None:
+        tables = regex_parse_ddl(text, path)
+        for t in tables:
+            t["confidence"] = 0.5
+            t["parse_source"] = "regex_fallback"
+        return tables
+
     raw_statements = _split_statements(text)
     tables: list[dict[str, Any]] = []
     used_fallback = False
