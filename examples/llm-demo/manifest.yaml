@@ -1,0 +1,12 @@
+project: llm-api-token-traffic
+sql_dialect: gaussdb_dws
+timezone: Asia/Shanghai
+layer_rules:
+  ods: "^ods\\."
+  dwd: "^dwd\\."
+  dim: "^dim\\."
+  dws: "^dws\\."
+  ads: "^ads\\."
+variables:
+  bizdate: "2026-07-25"
+  bizhour: "10"

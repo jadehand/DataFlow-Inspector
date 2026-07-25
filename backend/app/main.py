@@ -867,3 +867,292 @@ def assistant(pid: int, payload: dict = Body(...), version: int | None = None) -
         lines.append("未找到足够的结构化证据。可询问具体表名、指标名或“有哪些风险”。")
     return {"version": meta["version"], "question": question, "answer": "\n".join(lines),
             "evidence": evidence[:20], "confidence": "high" if evidence else "low"}
+
+
+# ============================================================
+#  单表导入 + 冲突检测 + 自动融合
+# ============================================================
+
+from app.parser.single_table import (
+    import_single_table,
+    merge_table_into_analysis,
+    infer_relationships,
+    SingleTableImportResult,
+)
+
+
+class SingleTableImportRequest(BaseModel):
+    ddl: str
+    etl_sql: str = ""                  # 可选：加工 SQL，提供时精准解析血缘
+    conflict_strategy: str = "check"   # "check" | "replace" | "keep" | "merge"
+
+
+@app.post("/api/projects/{pid}/tables/import")
+def import_single_table_endpoint(pid: int, req: SingleTableImportRequest) -> dict:
+    """
+    导入单条 CREATE TABLE DDL + 可选 ETL SQL。
+
+    三级模式：
+    - DDL + ETL  → 精准解析入库 (action: imported_precise)
+    - 仅 DDL      → 返回推断供用户判断 (action: orphan_pending)，或直接作为孤立表入库 (conflict_strategy != "check")
+    - 冲突        → 返回冲突详情让用户选择策略 (action: conflict)
+    """
+    project_or_404(pid)
+
+    # 获取最新分析数据
+    existing = None
+    latest_version = 0
+    with db() as c:
+        row = c.execute(
+            "SELECT * FROM imports WHERE project_id=? ORDER BY version DESC LIMIT 1",
+            (pid,),
+        ).fetchone()
+    if row:
+        existing = json.loads(dict(row)["analysis"])
+        latest_version = row["version"]
+
+    result = import_single_table(
+        ddl_text=req.ddl,
+        project_id=pid,
+        existing_analysis=existing,
+        conflict_strategy=req.conflict_strategy,
+        etl_sql=req.etl_sql if req.etl_sql else None,
+    )
+
+    # 推断结果格式化
+    def _relations_out():
+        return [
+            {
+                "index": i,
+                "source_table": r.source_table,
+                "target_table": r.target_table,
+                "matched_columns_count": len(r.matched_columns),
+                "matched_columns": r.matched_columns[:20],
+                "confidence": r.confidence,
+                "inference_method": r.inference_method,
+            }
+            for i, r in enumerate(result.inferred_relations)
+        ]
+
+    # ↓ 三种不需要写库的返回场景 ↓
+
+    # A. 冲突
+    if result.action == "conflict":
+        return {
+            "table_name": result.table_name,
+            "action": result.action,
+            "conflict": result.conflict.__dict__ if result.conflict else None,
+            "table_lineage": result.table_lineage,
+            "column_lineage": result.column_lineage,
+            "inferred_relations": _relations_out(),
+            "message": result.message,
+            "requires_decision": True,
+            "available_strategies": ["replace", "keep", "merge"],
+        }
+
+    # B. 仅 DDL、check 模式 → 返回推断给用户判断
+    if result.action == "orphan_pending":
+        return {
+            "table_name": result.table_name,
+            "action": result.action,
+            "table": {
+                "name": result.table_name,
+                "layer": result.table_info["layer"] if result.table_info else "?",
+                "columns": [{"name": c["name"], "type": c["type"]} for c in (result.table_info["columns"] if result.table_info else [])],
+            },
+            "inferred_relations": _relations_out(),
+            "message": result.message,
+            "requires_decision": True,
+            "options": [
+                "accept_orphan: 作为孤立表接受（无血缘）",
+                "confirm_inference: 选定一个推断关系确认入库",
+                "provide_etl: 补充 ETL SQL 后重新导入",
+            ],
+        }
+
+    # C. DDL + ETL check 模式 → 解析完成预览，等用户确认
+    if result.action == "ready_to_import_precise":
+        # 检查上游表是否已在数据字典中
+        existing_cat = {}
+        if existing:
+            for t in existing.get("tables", []):
+                existing_cat[t["name"]] = t
+        etl_sources = {e["source"] for e in result.table_lineage}
+        missing_upstream = sorted(s for s in etl_sources
+                                if s not in existing_cat and s != result.table_name)
+        return {
+            "table_name": result.table_name,
+            "action": result.action,
+            "table": {
+                "name": result.table_name,
+                "layer": result.table_info["layer"] if result.table_info else "?",
+                "columns": len(result.table_info["columns"]) if result.table_info else 0,
+            },
+            "table_lineage": result.table_lineage,
+            "column_lineage_count": len(result.column_lineage),
+            "column_lineage": result.column_lineage[:20],
+            "missing_upstream_tables": missing_upstream,
+            "message": result.message,
+            "requires_decision": True,
+        }
+
+    # ↓ 入库场景 ↓
+
+    # 构建或更新分析数据
+    if existing is None:
+        new_analysis = {
+            "summary": {
+                "tables": 1,
+                "columns": len(result.table_info["columns"]) if result.table_info else 0,
+                "table_edges": len(result.table_lineage),
+                "column_edges": len(result.column_lineage),
+                "metrics": 0, "risks": 0, "jobs": 0,
+            },
+            "files": [],
+            "tables": [result.table_info] if result.table_info else [],
+            "operations": result.operations,
+            "table_lineage": result.table_lineage,
+            "column_lineage": result.column_lineage,
+            "jobs": [], "job_lineage": [],
+            "metrics": [], "time_usage": [], "risks": [], "diagnostics": [],
+        }
+    else:
+        new_analysis = merge_table_into_analysis(
+            existing, result.table_info,
+            result.table_lineage, result.column_lineage,
+            result.inferred_relations, result.operations)
+
+    # 写回
+    seed = (req.ddl + (req.etl_sql or "")).encode()
+    digest = hashlib.sha256(seed).hexdigest()
+    new_version = latest_version + 1
+    ts = now()
+    with db() as c:
+        c.execute(
+            """INSERT INTO imports(project_id,version,sha256,filename,status,created_at,analysis)
+               VALUES(?,?,?,?,?,?,?)""",
+            (pid, new_version, digest, f"single-import:{result.table_name}", "completed",
+             ts, json.dumps(new_analysis, ensure_ascii=False)),
+        )
+
+    lineage_sources = {e.get("parse_source", "?") for e in
+                      (result.table_lineage + result.column_lineage)}
+    return {
+        "table_name": result.table_name,
+        "action": result.action,
+        "conflict": result.conflict.__dict__ if result.conflict else None,
+        "lineage_source": "parsed_from_sql" if "sqlglot_ast" in lineage_sources else
+                         "inferred" if "inferred" in lineage_sources else
+                         "none",
+        "table_lineage": result.table_lineage,
+        "column_lineage": result.column_lineage,
+        "inferred_relations": _relations_out(),
+        "version": new_version,
+        "summary": new_analysis["summary"],
+        "message": result.message,
+    }
+
+
+@app.get("/api/projects/{pid}/tables/{table_name:path}/relationships")
+def get_table_relationships(pid: int, table_name: str, version: int | None = None) -> dict:
+    """查询指定表在现有数据字典中的上游/下游关系和同名字段匹配。"""
+    a, meta = latest_analysis(pid, version)
+
+    # 找到目标表
+    target_table = None
+    for t in a["tables"]:
+        if t["name"].lower() == table_name.lower():
+            target_table = t
+            break
+
+    if not target_table:
+        raise HTTPException(404, f"table {table_name} not found in project {pid}")
+
+    # 上游表
+    upstream = [e["source"] for e in a["table_lineage"] if e["target"].lower() == table_name.lower()]
+
+    # 下游表
+    downstream = [e["target"] for e in a["table_lineage"] if e["source"].lower() == table_name.lower()]
+
+    # 同名字段匹配（JOIN 键）
+    target_cols = {c["name"].lower(): c for c in target_table.get("columns", [])}
+    join_matches = []
+    for t in a["tables"]:
+        if t["name"] == table_name:
+            continue
+        for c in t.get("columns", []):
+            cname = c["name"].lower()
+            if cname in target_cols and cname.endswith("_id"):
+                join_matches.append({
+                    "table": t["name"],
+                    "column": cname,
+                    "type": c.get("type", ""),
+                })
+
+    return {
+        "version": meta["version"],
+        "table": table_name,
+        "layer": target_table.get("layer"),
+        "columns": len(target_table.get("columns", [])),
+        "upstream_tables": upstream,
+        "downstream_tables": downstream,
+        "join_key_matches": join_matches,
+    }
+
+
+@app.post("/api/projects/{pid}/tables/preview")
+def preview_table_ddl(pid: int, payload: dict = Body(...)) -> dict:
+    """预处理单条 DDL，返回解析结果和冲突/关系预览（不写库）。"""
+    ddl_text = str(payload.get("ddl", "")).strip()
+    if not ddl_text:
+        raise HTTPException(422, "ddl is required")
+
+    from app.parser.ddl_parser import parse_ddl as ast_parse_ddl
+
+    tables = ast_parse_ddl(ddl_text, "__preview__")
+    if not tables:
+        raise HTTPException(400, "DDL 解析失败：未识别到有效的 CREATE TABLE 语句")
+
+    table_info = tables[0]
+
+    # 获取现有 catalog
+    existing_catalog = {}
+    with db() as c:
+        row = c.execute(
+            "SELECT * FROM imports WHERE project_id=? ORDER BY version DESC LIMIT 1",
+            (pid,),
+        ).fetchone()
+    if row:
+        analysis = json.loads(dict(row)["analysis"])
+        for t in analysis.get("tables", []):
+            existing_catalog[t["name"]] = t
+
+    # 冲突检测
+    from app.parser.single_table import check_conflict
+    conflict = check_conflict(table_info["name"], table_info["columns"], existing_catalog)
+
+    # 关系推断
+    relations = infer_relationships(
+        table_info["name"], table_info["columns"], existing_catalog)
+
+    return {
+        "table": {
+            "name": table_info["name"],
+            "layer": table_info["layer"],
+            "columns": [{"name": c["name"], "type": c["type"],
+                        "role": c.get("role", "unknown")}
+                       for c in table_info["columns"]],
+        },
+        "conflict": conflict.__dict__ if conflict else None,
+        "inferred_relations": [
+            {
+                "source_table": r.source_table,
+                "target_table": r.target_table,
+                "matched_columns_count": len(r.matched_columns),
+                "confidence": r.confidence,
+                "inference_method": r.inference_method,
+            }
+            for r in relations
+        ],
+        "total_relations_found": len(relations),
+    }

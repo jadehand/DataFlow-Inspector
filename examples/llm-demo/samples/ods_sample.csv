@@ -1,0 +1,6 @@
+request_id,trace_id,site_code,customer_id,model_id,input_tokens,output_tokens,total_tokens,latency_ms,http_status,err_code,stream_flag,dt,hour_no
+req_001,trace_991,site_sh,cust_0086,model_alpha,120,86,206,1820,200,0,true,2026-07-25,10
+req_002,trace_992,site_sh,cust_0086,model_alpha,250,180,430,2100,200,0,true,2026-07-25,10
+req_003,trace_993,site_sh,cust_0099,model_beta,500,320,820,3500,200,0,false,2026-07-25,10
+req_004,trace_994,site_sh,cust_0086,model_alpha,80,60,140,1500,500,ERR001,true,2026-07-25,10
+req_005,trace_995,site_sh,cust_0099,model_beta,1024,2048,3072,4500,200,0,false,2026-07-25,10

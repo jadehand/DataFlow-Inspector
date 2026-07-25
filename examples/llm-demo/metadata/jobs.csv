@@ -1,0 +1,4 @@
+job_name,script_path,schedule,upstream_jobs,relation_status
+ods_to_dwd_hourly,sql/01_ods_to_dwd_etl.sql,hourly,,"按小时调度：ODS 贴源 → DWD 明细清洗"
+dwd_to_dws_hourly,sql/02_dwd_to_dws_etl.sql,hourly,ods_to_dwd_hourly,"小时调度：DWD 明细 → DWS 分钟聚合 + 维度补维"
+dws_to_ads_daily,sql/03_dws_to_ads_etl.sql,daily,dwd_to_dws_hourly,"日调度：DWS 分钟 → ADS 日汇总"

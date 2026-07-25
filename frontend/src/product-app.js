@@ -3,7 +3,11 @@
 
   const params = new URLSearchParams(location.search);
   const suppliedRoot = params.get("api");
-  const apiRoot = (suppliedRoot || (location.protocol === "file:" ? "http://127.0.0.1:18080/api" : location.origin + "/api")).replace(/\/+$/, "");
+  // 默认后端：开发模式下 15173 的前端自动指向 18080 的后端
+  const defaultApi = location.port === "15173" ? "http://127.0.0.1:18080/api"
+    : location.protocol === "file:" ? "http://127.0.0.1:18080/api"
+    : location.origin + "/api";
+  const apiRoot = (suppliedRoot || defaultApi).replace(/\/+$/, "");
   const state = { mode: "connecting", projectId: null, projects: [], versions: [], wizardStep: 1, preflight: null, importResult: null };
   const $ = id => document.getElementById(id);
   const ui = window.DFI_UI;
