@@ -1,0 +1,49 @@
+services:
+  backend:
+    image: python:3.12-slim
+    working_dir: /app/backend
+    command:
+      - /bin/sh
+      - -c
+      - python -m pip install --no-cache-dir -r requirements.txt && python -m uvicorn app.main:app --host 0.0.0.0 --port 18080
+    environment:
+      DFI_DATA_DIR: /app/backend/data
+      DFI_DB_PATH: /app/backend/data/dataflow.db
+      DFI_IMPORT_DIR: /app/backend/data/imports
+    volumes:
+      - ./:/app
+      - backend_data:/app/backend/data
+    ports:
+      - "127.0.0.1:18080:18080"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18080/api/health', timeout=2)"
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  frontend:
+    image: python:3.12-slim
+    working_dir: /app
+    command:
+      - python
+      - -m
+      - http.server
+      - "15173"
+      - --bind
+      - 0.0.0.0
+      - --directory
+      - frontend/src
+    volumes:
+      - ./:/app:ro
+    ports:
+      - "127.0.0.1:15173:15173"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  backend_data:

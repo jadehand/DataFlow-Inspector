@@ -1,0 +1,4 @@
+-- DDL 示例占位文件。
+-- 请删除本注释，并粘贴经过脱敏的 CREATE TABLE / ALTER TABLE 语句。
+-- 建议使用完整限定名，例如 schema_name.table_name。
+-- 不要在文件中包含数据库账号、密码、连接串或其他凭据。

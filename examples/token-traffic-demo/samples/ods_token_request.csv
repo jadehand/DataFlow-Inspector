@@ -1,0 +1,5 @@
+request_id,tenant_id,model_code,region_code,status_code,input_tokens,output_tokens,latency_ms,request_time,source_created_at,source_updated_at,ingestion_time,dt
+req_0001,tenant_a,model_x,north_01,success,120,80,450,2026-07-22 10:00:12,2026-07-22 10:00:12,2026-07-22 10:00:13,2026-07-22 10:02:00,2026-07-22
+req_0002,tenant_a,model_x,north_01,failed,90,0,800,2026-07-22 10:00:44,2026-07-22 10:00:44,2026-07-22 10:00:45,2026-07-22 10:02:01,2026-07-22
+req_0003,tenant_b,model_y,east_02,success,200,160,620,2026-07-22 10:59:58,2026-07-22 10:59:58,2026-07-22 11:00:01,2026-07-22 11:03:05,2026-07-22
+req_0004,tenant_b,model_y,east_02,test,10,5,20,2026-07-22 11:00:03,2026-07-22 11:00:03,2026-07-22 11:00:04,2026-07-22 11:03:06,2026-07-22

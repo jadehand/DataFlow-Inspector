@@ -1,0 +1,19 @@
+project: desensitized_data_pipeline
+name: 脱敏数据加工链路
+version: "1.0"
+sql_dialect: gaussdb_dws
+timezone: Asia/Shanghai
+default_schema: schema
+variables:
+  data_time: "2026-07-23 10:00:00"
+layer_rules:
+  ods: "^ods_"
+  dwd: "^dwd_"
+  dws: "^dws_"
+inputs:
+  ddl_dir: ddl
+  sql_dir: sql
+  jobs_file: metadata/jobs.csv
+notes:
+  - 原文已脱敏，部分投影、分组维度和关联条件以省略号表示。
+  - 省略内容仅转换为 SQL 注释，未补造字段。

@@ -3,18 +3,39 @@ Thumbs.db
 .DS_Store
 *.lnk
 
-# Temp
-*.tmp
-*.log
-*.bak
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*~
 
-# Python 缓存（如果后端是 Python）
+# Python
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 .pytest_cache/
+.venv/
+venv/
 
-# Node 缓存（如果前端是 Node）
+# Node
 node_modules/
 .npm
+
+# Logs & runtime data
+.run/
+logs/
+*.log
+*.bak
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+data/
+imports/
+backups/
+
+# Env
+.env
+.env.local

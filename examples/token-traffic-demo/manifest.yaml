@@ -1,0 +1,23 @@
+project: token-traffic-demo
+name: Token 请求流量演示项目
+description: RDS/CDM 到 ODS、DWD、DWS、ADS 的完整 GaussDB(DWS) 示例链路
+sql_dialect: gaussdb_dws
+timezone: Asia/Shanghai
+default_schema: demo
+variables:
+  biz_date: "2026-07-22"
+layer_rules:
+  source: "^(rds|src)_"
+  ods: "^ods_"
+  dwd: "^dwd_"
+  dws: "^dws_"
+  ads: "^ads_"
+paths:
+  ddl: ddl
+  sql: sql
+  samples: samples
+  jobs: metadata/jobs.csv
+known_findings:
+  - TIME_FIELD_MISMATCH
+  - SELECT_STAR
+  - METRIC_FILTER_DRIFT

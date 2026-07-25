@@ -1,0 +1,36 @@
+CREATE TABLE schema.ods_source_a (
+    pk_id BIGINT,
+    trace_id VARCHAR(255),
+    api_path TEXT,
+    entity_id VARCHAR(255),
+    entity_name VARCHAR(255),
+    service_id VARCHAR(255),
+    service_type INTEGER,
+    tenant_id VARCHAR(255),
+    ts_collect BIGINT,
+    category VARCHAR(255),
+    cnt_total BIGINT,
+    cnt_success BIGINT,
+    cnt_client_err BIGINT,
+    cnt_server_err BIGINT,
+    val_total FLOAT8,
+    val_input FLOAT8,
+    val_output FLOAT8,
+    val_metric_a FLOAT8,
+    val_metric_b FLOAT8,
+    val_latency FLOAT8,
+    mq_offset BIGINT,
+    mq_timestamp TIMESTAMP,
+    etl_time TIMESTAMP,
+    err_detail VARCHAR(64),
+    ext_attr_1 VARCHAR(255),
+    ext_attr_2 FLOAT8,
+    ext_attr_3 FLOAT8,
+    ext_attr_4 VARCHAR(255),
+    ext_attr_5 VARCHAR(255),
+    ext_attr_6 VARCHAR(255),
+    ext_attr_7 FLOAT8
+)
+WITH (ORIENTATION = COLUMN, COMPRESSION = 'middle', period = '1 day', ttl = '5 days')
+DISTRIBUTE BY HASH (pk_id)
+PARTITION BY RANGE (mq_timestamp);

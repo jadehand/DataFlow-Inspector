@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>DataFlow Inspector · 数据加工链路分析台</title>
+  <style>
+    :root {
+      --canvas:#f3f6f8; --surface:#fff; --ink:#172131; --muted:#687487;
+      --navy:#122238; --navy-2:#1b304b; --line:#dce3e9; --accent:#147c91;
+      --accent-soft:#e2f2f4; --danger:#c3454f; --warning:#d98324; --success:#278d66;
+      --source:#758195; --ods:#3478c8; --dwd:#7759c8; --dws:#d98324; --ads:#278d66;
+      --shadow:0 12px 30px rgba(23,33,49,.08); --radius:12px;
+      font-family:Inter,"PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--canvas);color:var(--ink);font-size:14px}
+    button,input,select,textarea{font:inherit}
+    button{cursor:pointer}
+    button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:3px solid rgba(20,124,145,.25);outline-offset:2px}
+    .mono{font-family:"JetBrains Mono","SFMono-Regular",Consolas,monospace}
+    .app{min-height:100vh;display:grid;grid-template-columns:244px 1fr}
+    .sidebar{background:var(--navy);color:#dce7f2;position:fixed;width:244px;height:100vh;padding:24px 16px;z-index:20}
+    .brand{display:flex;align-items:center;gap:12px;padding:0 8px 24px;border-bottom:1px solid rgba(255,255,255,.1)}
+    .brand-mark{width:38px;height:38px;border-radius:10px;background:linear-gradient(135deg,#55aabd,#147c91);position:relative;box-shadow:inset 0 0 0 1px rgba(255,255,255,.2)}
+    .brand-mark:before,.brand-mark:after{content:"";position:absolute;left:9px;right:9px;height:3px;background:#fff;border-radius:3px}
+    .brand-mark:before{top:12px;box-shadow:0 6px 0 rgba(255,255,255,.72)}
+    .brand-mark:after{top:24px;right:16px}
+    .brand strong{display:block;font-size:15px;letter-spacing:.2px}.brand small{color:#91a7bc;font-size:11px}
+    .nav{padding-top:18px}.nav-label{font-size:10px;letter-spacing:1.5px;color:#7890a8;padding:0 12px;margin:16px 0 8px;text-transform:uppercase}
+    .nav button{width:100%;border:0;background:transparent;color:#aebfd0;text-align:left;padding:10px 12px;border-radius:8px;margin:2px 0;display:flex;align-items:center;gap:11px;transition:.18s}
+    .nav button:hover{background:rgba(255,255,255,.06);color:#fff}.nav button.active{background:#21415b;color:#fff;box-shadow:inset 3px 0 0 #51b1c1}
+    .nav .ico{width:18px;height:18px;display:grid;place-items:center;font-size:15px}
+    .side-foot{position:absolute;bottom:20px;left:16px;right:16px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08);border-radius:10px;padding:12px}
+    .side-foot .status{display:flex;align-items:center;gap:8px;font-size:12px}.dot{width:8px;height:8px;background:#5bc996;border-radius:50%;box-shadow:0 0 0 4px rgba(91,201,150,.12)}
+    .main{grid-column:2;min-width:0}
+    .topbar{height:68px;background:rgba(255,255,255,.92);border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 30px;position:sticky;top:0;z-index:10;backdrop-filter:blur(10px)}
+    .project-switch{display:flex;align-items:center;gap:10px}.project-switch small{color:var(--muted)}.project-switch strong{font-size:15px}
+    .top-actions{display:flex;gap:8px;align-items:center}
+    .btn{border:1px solid var(--line);background:var(--surface);color:var(--ink);border-radius:8px;padding:9px 13px;font-weight:600}
+    .btn:hover{border-color:#b8c5cf;background:#f9fbfc}.btn.primary{background:var(--accent);border-color:var(--accent);color:white}.btn.danger{color:var(--danger);border-color:#efcbd0;background:#fff8f8}
+    .icon-btn{width:38px;height:38px;padding:0;display:grid;place-items:center}
+    .content{padding:28px 30px 60px;max-width:1600px;margin:auto}
+    .page{display:none}.page.active{display:block;animation:fade .18s ease}
+    @keyframes fade{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
+    .page-head{display:flex;justify-content:space-between;gap:20px;align-items:flex-start;margin-bottom:22px}
+    .eyebrow{color:var(--accent);font-size:11px;font-weight:800;letter-spacing:1.2px;text-transform:uppercase;margin-bottom:7px}
+    h1{font-size:26px;line-height:1.2;margin:0 0 7px;letter-spacing:-.5px}h2{font-size:18px;margin:0}h3{font-size:15px;margin:0}
+    .subtle{color:var(--muted);line-height:1.65}.head-actions{display:flex;gap:8px}
+    .pipeline{background:var(--navy);border-radius:14px;color:#dbe7f1;padding:18px 22px;display:flex;align-items:center;gap:0;box-shadow:var(--shadow);margin-bottom:22px;overflow:auto}
+    .pipe-stage{display:flex;align-items:center;min-width:max-content}.pipe-node{display:flex;align-items:center;gap:9px;padding:9px 12px;border-radius:8px;border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.04);transition:.2s}
+    .pipe-node:hover,.pipe-node.active{background:rgba(255,255,255,.11)}.pipe-node i{width:9px;height:9px;border-radius:3px;background:var(--c)}
+    .pipe-node small{color:#89a0b5;margin-left:3px}.pipe-line{width:32px;height:1px;background:#4a6077;position:relative}.pipe-line:after{content:"";position:absolute;right:0;top:-3px;border-left:5px solid #4a6077;border-top:3px solid transparent;border-bottom:3px solid transparent}
+    .pipe-line.pulse:before{content:"";position:absolute;width:8px;height:3px;border-radius:4px;background:#62c4d1;top:-1px;animation:flow 2s infinite}
+    @keyframes flow{from{left:0}to{left:25px}}
+    .grid{display:grid;gap:16px}.grid.cols-4{grid-template-columns:repeat(4,1fr)}.grid.cols-3{grid-template-columns:repeat(3,1fr)}.grid.two{grid-template-columns:minmax(0,1.65fr) minmax(300px,.85fr)}
+    .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:0 2px 4px rgba(23,33,49,.02)}
+    .card-pad{padding:20px}.stat{padding:18px;position:relative;overflow:hidden}.stat:after{content:"";position:absolute;right:-10px;bottom:-22px;width:70px;height:70px;border-radius:50%;background:var(--tint)}
+    .stat .label{color:var(--muted);font-size:12px;margin-bottom:11px}.stat .value{font-size:28px;font-weight:750;letter-spacing:-1px}.stat .delta{font-size:11px;margin-top:5px;color:var(--success)}
+    .section-head{padding:17px 19px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between}
+    .section-head a,.link{color:var(--accent);font-weight:650;text-decoration:none;font-size:12px;cursor:pointer}
+    .flow-list{padding:4px 18px 12px}.flow-row{display:grid;grid-template-columns:34px 1fr auto;gap:12px;align-items:center;padding:14px 0;border-bottom:1px solid #edf1f4}.flow-row:last-child{border:0}
+    .flow-code{width:34px;height:34px;border-radius:9px;background:var(--accent-soft);color:var(--accent);display:grid;place-items:center;font-weight:800;font-size:11px}
+    .flow-row strong{display:block;margin-bottom:4px}.flow-meta{font-size:11px;color:var(--muted);display:flex;gap:12px}.health{font-size:11px;font-weight:700;padding:5px 8px;border-radius:20px}.health.ok{color:var(--success);background:#e7f5ef}.health.warn{color:#a85f12;background:#fff2df}
+    .risk-list{padding:7px 18px}.risk{display:flex;gap:12px;padding:13px 0;border-bottom:1px solid #edf1f4}.risk:last-child{border:0}.risk-icon{width:28px;height:28px;border-radius:8px;background:#fff0e5;color:var(--warning);display:grid;place-items:center;flex:0 0 auto}.risk.high .risk-icon{background:#fff0f2;color:var(--danger)}
+    .risk strong{font-size:13px;display:block;margin-bottom:4px}.risk p{font-size:11px;color:var(--muted);margin:0;line-height:1.5}
+    .toolbar{background:var(--surface);border:1px solid var(--line);padding:12px;border-radius:10px;display:flex;gap:9px;align-items:center;margin-bottom:14px;flex-wrap:wrap}
+    .search{position:relative;min-width:250px;flex:1}.search input{width:100%;height:38px;border:1px solid var(--line);border-radius:7px;padding:0 12px 0 34px;background:#fbfcfd}.search:before{content:"⌕";position:absolute;left:12px;top:7px;color:var(--muted);font-size:18px}
+    select,input,textarea{border:1px solid var(--line);border-radius:7px;background:#fff;color:var(--ink);padding:9px 10px}
+    table{width:100%;border-collapse:collapse}th{text-align:left;color:var(--muted);font-size:11px;font-weight:700;background:#f7f9fb;padding:11px 14px;border-bottom:1px solid var(--line)}td{padding:14px;border-bottom:1px solid #edf1f4;vertical-align:middle}tbody tr{transition:.12s}tbody tr:hover{background:#f8fbfc}tbody tr:last-child td{border-bottom:0}
+    .table-name{font-weight:700;font-family:"JetBrains Mono",Consolas,monospace;font-size:12px}.table-desc{font-size:11px;color:var(--muted);margin-top:4px}
+    .tag{display:inline-flex;align-items:center;gap:5px;padding:4px 7px;border-radius:5px;font-size:10px;font-weight:800;letter-spacing:.3px;background:color-mix(in srgb,var(--tag) 12%,white);color:var(--tag)}.tag:before{content:"";width:6px;height:6px;border-radius:2px;background:var(--tag)}
+    .tiny-risk{width:7px;height:7px;border-radius:50%;background:var(--danger);display:inline-block;margin-right:6px}
+    .tabs{display:flex;border-bottom:1px solid var(--line);padding:0 18px;gap:24px}.tab{border:0;background:transparent;padding:14px 0;color:var(--muted);font-weight:650;position:relative}.tab.active{color:var(--accent)}.tab.active:after{content:"";position:absolute;height:2px;background:var(--accent);left:0;right:0;bottom:-1px}
+    .detail-layout{display:grid;grid-template-columns:1fr 330px;gap:16px}.info-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:0}.info-item{padding:16px 18px;border-right:1px solid #edf1f4;border-bottom:1px solid #edf1f4}.info-item:nth-child(3n){border-right:0}.info-item small{display:block;color:var(--muted);font-size:10px;margin-bottom:6px}.info-item strong{font-size:12px}
+    .code{background:#132237;color:#dce8f2;border-radius:9px;padding:16px;line-height:1.8;font-size:11px;overflow:auto}.kw{color:#75c7d5}.fn{color:#e7ad62}.str{color:#83c89f}
+    .lineage-shell{height:620px;display:grid;grid-template-columns:minmax(0,1fr) 270px;overflow:hidden}.graph{position:relative;background-color:#f8fafb;background-image:radial-gradient(#cfd8df 1px,transparent 1px);background-size:20px 20px;overflow:auto}
+    .lane-labels{position:sticky;top:0;height:42px;background:rgba(248,250,251,.93);display:grid;grid-template-columns:repeat(5,1fr);z-index:3;border-bottom:1px solid var(--line);backdrop-filter:blur(5px)}.lane-labels span{text-align:center;padding:13px;color:var(--muted);font-size:10px;font-weight:800;letter-spacing:.8px}
+    .graph-area{position:relative;width:875px;height:540px;margin:auto}.edge{position:absolute;height:2px;background:#9db0bd;transform-origin:left center;z-index:0}.edge:after{content:"";position:absolute;right:-1px;top:-4px;border-left:7px solid #9db0bd;border-top:5px solid transparent;border-bottom:5px solid transparent}.edge.hot{background:var(--accent);height:3px}.edge.hot:after{border-left-color:var(--accent)}
+    .node{position:absolute;width:120px;background:#fff;border:1px solid #cfdae2;border-left:4px solid var(--c);border-radius:9px;padding:10px;box-shadow:0 5px 16px rgba(28,42,60,.08);z-index:2;cursor:pointer;transition:.18s}.node:hover,.node.selected{transform:translateY(-2px);border-color:var(--c);box-shadow:0 8px 20px rgba(28,42,60,.14)}.node.selected{outline:3px solid color-mix(in srgb,var(--c) 15%,transparent)}
+    .node .layer{font-size:9px;color:var(--c);font-weight:900;letter-spacing:.6px}.node strong{font:700 11px "JetBrains Mono",Consolas,monospace;display:block;margin:6px 0}.node small{color:var(--muted);font-size:9px}
+    .evidence{border-left:1px solid var(--line);background:#fff;overflow:auto}.evidence-head{padding:18px;border-bottom:1px solid var(--line)}.evidence-body{padding:18px}.evidence-block{margin-bottom:20px}.evidence-block label{font-size:10px;color:var(--muted);display:block;margin-bottom:7px;text-transform:uppercase;letter-spacing:.8px}.evidence-block p{line-height:1.6;margin:0;font-size:12px}
+    .workflow-canvas{padding:30px;overflow:auto}.job-chain{display:flex;align-items:center;min-width:950px}.job{width:155px;border:1px solid var(--line);background:white;border-radius:10px;padding:13px;position:relative}.job .num{font-size:10px;color:var(--accent);font-weight:900}.job strong{font-size:12px;display:block;margin:8px 0}.job small{font-size:9px;color:var(--muted)}.job-line{width:35px;height:1px;background:#9dabb7;position:relative}.job-line:after{content:"";position:absolute;right:0;top:-3px;border-left:6px solid #9dabb7;border-top:3px solid transparent;border-bottom:3px solid transparent}
+    .branch{margin-left:38px;margin-top:28px;display:flex;gap:26px}.branch .job:before{content:"";position:absolute;left:50%;top:-29px;height:28px;border-left:1px dashed #9dabb7}
+    .metric-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}.metric-card{padding:18px;cursor:pointer;transition:.16s}.metric-card:hover{transform:translateY(-2px);box-shadow:var(--shadow)}.metric-card .formula{font:700 12px "JetBrains Mono",monospace;background:#f1f6f7;color:#176c7a;border-radius:7px;padding:10px;margin:14px 0}.metric-foot{display:flex;justify-content:space-between;color:var(--muted);font-size:10px}
+    .impact-form{padding:20px;display:grid;grid-template-columns:repeat(2,1fr);gap:14px}.field{display:flex;flex-direction:column;gap:7px}.field.full{grid-column:1/-1}.field label{font-size:11px;color:var(--muted);font-weight:700}
+    .impact-summary{display:none;margin-top:16px}.impact-summary.show{display:block;animation:fade .25s}.risk-score{padding:20px;background:#fff8ee;border:1px solid #f0d8b6;border-radius:12px;display:flex;align-items:center;gap:18px}.score-circle{width:64px;height:64px;border-radius:50%;background:conic-gradient(var(--warning) 0 66%,#f2e2ca 66%);display:grid;place-items:center;position:relative}.score-circle:before{content:"";position:absolute;inset:7px;background:#fff8ee;border-radius:50%}.score-circle strong{z-index:1;font-size:18px}.impact-tree{padding:20px}.tree-row{display:flex;align-items:center;gap:8px;padding:7px 0 7px calc(var(--depth)*24px);font-size:12px}.tree-line{width:16px;height:1px;background:#aab6c0}.change{padding:14px 18px;border-bottom:1px solid #edf1f4;display:grid;grid-template-columns:75px 1fr auto;gap:12px}.change-type{font-size:10px;font-weight:800}.change-type.add{color:var(--success)}.change-type.modify{color:var(--warning)}.change-type.delete{color:var(--danger)}
+    .chat{height:650px;display:grid;grid-template-columns:280px 1fr}.chat-side{border-right:1px solid var(--line);padding:16px}.suggestion{border:1px solid var(--line);border-radius:8px;padding:11px;margin-bottom:8px;font-size:11px;line-height:1.5;cursor:pointer}.suggestion:hover{border-color:var(--accent);background:var(--accent-soft)}.chat-main{display:flex;flex-direction:column}.messages{flex:1;padding:24px;overflow:auto}.msg{max-width:760px;margin-bottom:18px}.msg.user{margin-left:auto;background:var(--accent);color:#fff;border-radius:12px 12px 3px 12px;padding:12px 15px}.msg.ai{display:flex;gap:12px}.avatar{width:32px;height:32px;border-radius:8px;background:var(--navy);color:#fff;display:grid;place-items:center;flex:0 0 auto}.bubble{background:#f7f9fb;border:1px solid var(--line);border-radius:3px 12px 12px;padding:15px;line-height:1.7}.evidence-link{display:inline-block;margin:8px 6px 0 0;padding:5px 8px;border-radius:5px;background:#e7f3f5;color:var(--accent);font-size:10px;font-weight:700}.chat-input{border-top:1px solid var(--line);padding:14px;display:flex;gap:8px}.chat-input input{flex:1}
+    .drawer-overlay{position:fixed;inset:0;background:rgba(12,24,38,.25);z-index:40;opacity:0;visibility:hidden;transition:.2s}.drawer-overlay.open{opacity:1;visibility:visible}.drawer{position:absolute;right:0;top:0;bottom:0;width:470px;background:#fff;box-shadow:-16px 0 40px rgba(12,24,38,.15);padding:24px;transform:translateX(100%);transition:.25s;overflow:auto}.drawer-overlay.open .drawer{transform:none}.drawer-close{float:right;border:0;background:#f2f5f7;border-radius:7px;width:32px;height:32px}
+    .toast{position:fixed;right:24px;bottom:24px;background:var(--navy);color:white;border-radius:9px;padding:12px 16px;box-shadow:var(--shadow);z-index:60;transform:translateY(20px);opacity:0;transition:.2s}.toast.show{transform:none;opacity:1}
+    .mode-banner{display:none;padding:10px 30px;background:#fff5e5;border-bottom:1px solid #efd6ac;color:#815315;font-size:12px;align-items:center;justify-content:space-between;gap:16px}.mode-banner.show{display:flex}.mode-banner strong{margin-right:7px}.mode-banner code{font-size:10px;color:#67420d}.mode-banner .btn{padding:6px 10px;background:transparent;border-color:#d6b879;color:#76501b}
+    .connection-pill{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line);border-radius:20px;padding:6px 9px;font-size:10px;font-weight:800;background:#f8fafb}.connection-pill:before{content:"";width:7px;height:7px;border-radius:50%;background:var(--warning)}.connection-pill.live:before{background:var(--success);box-shadow:0 0 0 3px rgba(39,141,102,.13)}.connection-pill.loading:before{background:var(--accent);animation:pulseDot .8s infinite alternate}@keyframes pulseDot{to{opacity:.3}}
+    .project-select{border:0;background:transparent;padding:2px 24px 2px 0;font-weight:750;max-width:280px}.project-select:focus-visible{outline:2px solid var(--accent)}
+    .load-state{padding:34px;text-align:center;color:var(--muted)}.load-state strong{display:block;color:var(--ink);margin-bottom:7px}.load-state.error{color:var(--danger)}.api-note{font-size:10px;color:var(--muted);line-height:1.5;margin-top:10px}.file-input{width:100%;border:1px dashed #aebec9;background:#f8fafb;padding:26px 18px;text-align:center}
+    .drawer-actions{display:flex;gap:8px;margin-top:20px;align-items:center}.drawer-actions .btn:last-child{margin-left:auto}.import-progress{display:none;margin-top:14px;padding:12px;border-radius:8px;background:var(--accent-soft);color:#176c7a;font-size:11px}.import-progress.show{display:block}
+    .import-drawer{width:min(760px,96vw);padding:0}.wizard-head{padding:24px 28px 18px;border-bottom:1px solid var(--line);position:sticky;top:0;background:#fff;z-index:3}.wizard-head h2{margin:2px 0 5px}.wizard-head .drawer-close{position:absolute;right:24px;top:24px}.wizard-steps{display:grid;grid-template-columns:repeat(4,1fr);gap:0;margin-top:20px}.wizard-step{position:relative;padding-top:20px;color:var(--muted);font-size:10px;font-weight:750}.wizard-step:before{content:"";position:absolute;left:0;right:0;top:7px;height:2px;background:#dce3e9}.wizard-step:first-child:before{left:12px}.wizard-step:last-child:before{right:calc(100% - 12px)}.wizard-step i{position:absolute;top:0;left:0;width:16px;height:16px;border-radius:50%;background:#fff;border:2px solid #bac6cf;z-index:1}.wizard-step.active{color:var(--accent)}.wizard-step.active i,.wizard-step.done i{border-color:var(--accent);background:var(--accent)}.wizard-step.done i:after{content:"✓";position:absolute;color:white;font-style:normal;font-size:9px;left:2px;top:-1px}.wizard-step strong{display:block;font-size:11px;color:inherit;margin-bottom:2px}.wizard-body{padding:24px 28px 30px}.wizard-panel{display:none}.wizard-panel.active{display:block;animation:fade .16s}.choice-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:18px 0}.choice-card{border:1px solid var(--line);border-radius:10px;padding:15px;cursor:pointer;background:#fff}.choice-card:has(input:checked){border-color:var(--accent);box-shadow:0 0 0 3px rgba(20,124,145,.1)}.choice-card input{margin-right:7px}.choice-card strong{font-size:12px}.choice-card p{margin:7px 0 0 23px;color:var(--muted);font-size:10px;line-height:1.5}.package-tabs{display:flex;gap:6px;margin:18px 0 10px}.package-tab{padding:7px 11px}.package-tab.active{background:var(--navy);border-color:var(--navy);color:#fff}.package-tree{background:#132237;color:#d8e5ef;border-radius:10px;padding:16px 18px;font:11px/1.8 "JetBrains Mono",Consolas,monospace;white-space:pre;overflow:auto;min-height:235px}.req{color:#7dd5df}.recommend{color:#f1bc73}.optional{color:#8fa4b8}.legend{display:flex;gap:14px;margin-top:10px;font-size:10px;color:var(--muted)}.legend b{width:7px;height:7px;border-radius:2px;display:inline-block;margin-right:5px}.download-row{display:flex;gap:8px;margin-top:18px;flex-wrap:wrap}.upload-zone{display:block;border:1.5px dashed #9eafb9;background:#f8fafb;border-radius:12px;padding:28px;text-align:center;cursor:pointer}.upload-zone:hover{border-color:var(--accent);background:#f3fafb}.upload-zone input{position:absolute;opacity:0;pointer-events:none}.upload-zone strong{display:block;margin-bottom:6px}.file-meta{display:none;margin-top:12px;border:1px solid var(--line);border-radius:9px;padding:12px 14px;align-items:center;gap:12px}.file-meta.show{display:flex}.file-meta .file-icon{width:34px;height:38px;background:var(--accent-soft);color:var(--accent);display:grid;place-items:center;border-radius:7px;font-weight:850}.file-meta small{display:block;color:var(--muted);margin-top:3px}.preflight{margin-top:16px}.preflight-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:8px}.check-card{border:1px solid var(--line);border-radius:8px;padding:10px;background:#fff}.check-card strong{font-size:16px;display:block}.check-card span{font-size:9px;color:var(--muted)}.check-card.ok{border-color:#bfe4d5;background:#f4fbf8}.check-card.warn{border-color:#efd7b7;background:#fffaf2}.diagnostic{display:flex;gap:9px;padding:10px 12px;border-radius:8px;margin-top:8px;font-size:10px;line-height:1.5}.diagnostic.error{background:#fff0f2;color:#9d2f39}.diagnostic.warning{background:#fff5e5;color:#885817}.confirm-box{border:1px solid var(--line);border-radius:10px;padding:16px;margin-top:16px}.confirm-row{display:flex;justify-content:space-between;gap:16px;padding:8px 0;border-bottom:1px solid #edf1f4;font-size:11px}.confirm-row:last-child{border:0}.summary-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;margin:18px 0}.summary-item{background:#f5f8fa;border:1px solid var(--line);padding:13px;border-radius:9px}.summary-item strong{display:block;font-size:20px}.summary-item span{font-size:10px;color:var(--muted)}.wizard-mode{display:inline-flex;margin-top:11px;padding:5px 8px;border-radius:20px;background:#eef3f6;color:var(--muted);font-size:9px;font-weight:800}.wizard-mode.live{background:#e7f5ef;color:var(--success)}.wizard-help{font-size:10px;color:var(--muted);line-height:1.65}.wizard-error{color:var(--danger);font-size:11px;margin-top:8px}.btn[disabled]{cursor:not-allowed;opacity:.5}
+    .mobile-menu{display:none}
+    @media(max-width:1050px){.grid.cols-4{grid-template-columns:repeat(2,1fr)}.grid.two,.detail-layout{grid-template-columns:1fr}.metric-grid{grid-template-columns:repeat(2,1fr)}.lineage-shell{grid-template-columns:1fr}.evidence{display:none}}
+    @media(max-width:760px){.app{grid-template-columns:1fr}.sidebar{transform:translateX(-100%);transition:.2s}.sidebar.open{transform:none}.main{grid-column:1}.mobile-menu{display:grid}.topbar{padding:0 16px}.content{padding:20px 14px}.grid.cols-4,.grid.cols-3,.metric-grid{grid-template-columns:1fr}.page-head{flex-direction:column}.head-actions{width:100%;flex-wrap:wrap}.pipeline{border-radius:10px}.table-card{overflow:auto}.detail-layout{display:block}.info-grid{grid-template-columns:1fr}.info-item{border-right:0}.chat{grid-template-columns:1fr}.chat-side{display:none}.impact-form{grid-template-columns:1fr}.field.full{grid-column:1}.drawer{width:min(92vw,470px)}.import-drawer{width:100vw}.wizard-head,.wizard-body{padding-left:18px;padding-right:18px}.wizard-step span{display:none}.choice-grid{grid-template-columns:1fr}.preflight-grid{grid-template-columns:repeat(2,1fr)}.summary-grid{grid-template-columns:repeat(2,1fr)}.drawer-actions{position:sticky;bottom:0;background:#fff;padding:12px 0 4px}.wizard-steps{margin-right:44px}}
+    @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important}}
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand"><div class="brand-mark"></div><div><strong>DataFlow Inspector</strong><small>数据加工链路分析台</small></div></div>
+      <nav class="nav" aria-label="主导航">
+        <div class="nav-label">工作台</div>
+        <button class="active" data-page="overview"><span class="ico">⌂</span>项目总览</button>
+        <button data-page="assets"><span class="ico">▦</span>数据资产</button>
+        <button data-page="lineage"><span class="ico">⌘</span>血缘分析</button>
+        <button data-page="workflow"><span class="ico">⌁</span>作业流</button>
+        <button data-page="metrics"><span class="ico">◫</span>指标口径</button>
+        <div class="nav-label">变更与诊断</div>
+        <button data-page="impact"><span class="ico">⌬</span>变更影响</button>
+        <button data-page="compare"><span class="ico">⇄</span>版本比较</button>
+        <button data-page="assistant"><span class="ico">✦</span>数据助手</button>
+      </nav>
+      <div class="side-foot"><div class="status"><span class="dot" id="sideDot"></span><span id="sideVersion">正在连接分析服务…</span></div><div id="sideStats" style="font-size:10px;color:#7890a8;margin-top:8px">读取项目元数据</div></div>
+    </aside>
+    <main class="main">
+      <header class="topbar">
+        <div class="project-switch"><button class="btn icon-btn mobile-menu" id="menuBtn" aria-label="打开导航">☰</button><div><small>当前项目</small><br><select id="projectSelect" class="project-select" aria-label="切换项目"><option>正在加载项目…</option></select></div></div>
+        <div class="top-actions"><span class="connection-pill loading" id="connectionPill">连接中</span><button class="btn icon-btn" id="refreshBtn" title="刷新后端数据" aria-label="刷新后端数据">↻</button><button class="btn" id="importBtn">＋ 导入新版本</button><button class="btn primary" data-goto="assistant">✦ 问数据助手</button></div>
+      </header>
+      <div class="mode-banner" id="modeBanner"><div><strong id="modeBannerTitle">连接失败</strong><span id="modeBannerText">无法读取后端，尚未切换为演示数据。</span> <code id="apiEndpoint"></code></div><div style="display:flex;gap:8px"><button class="btn" id="demoModeBtn">显式切换演示模式</button><button class="btn" id="retryConnection">重新连接</button></div></div>
+      <div class="content">
+        <div class="pipeline" aria-label="数据加工层级">
+          <div class="pipe-stage"><div class="pipe-node" style="--c:var(--source)" data-layer="SOURCE"><i></i>RDS / CDM <small>3</small></div><span class="pipe-line pulse"></span></div>
+          <div class="pipe-stage"><div class="pipe-node" style="--c:var(--ods)" data-layer="ODS"><i></i>ODS <small>2</small></div><span class="pipe-line pulse"></span></div>
+          <div class="pipe-stage"><div class="pipe-node" style="--c:var(--dwd)" data-layer="DWD"><i></i>DWD <small>3</small></div><span class="pipe-line pulse"></span></div>
+          <div class="pipe-stage"><div class="pipe-node" style="--c:var(--dws)" data-layer="DWS"><i></i>DWS 分钟 / 小时 <small>3</small></div><span class="pipe-line pulse"></span></div>
+          <div class="pipe-stage"><div class="pipe-node" style="--c:var(--ads)" data-layer="ADS"><i></i>ADS 报表 <small>3</small></div></div>
+        </div>
+
+        <section class="page active" id="page-overview">
+          <div class="page-head"><div><div class="eyebrow">Project pulse</div><h1>Token 请求流量分析</h1><div class="subtle">从 RDS 搬运到 ADS 报表的完整加工链路，最近分析于 2 分钟前。</div></div><div class="head-actions"><button class="btn" data-goto="compare">比较版本</button><button class="btn primary" data-goto="lineage">打开完整血缘</button></div></div>
+          <div class="grid cols-4">
+            <div class="card stat" style="--tint:#e8f1fb"><div class="label">数据资产</div><div class="value">14</div><div class="delta">5 个加工层级</div></div>
+            <div class="card stat" style="--tint:#efeafd"><div class="label">字段总数</div><div class="value">186</div><div class="delta">42 个已识别维度</div></div>
+            <div class="card stat" style="--tint:#fff0df"><div class="label">指标口径</div><div class="value">8</div><div class="delta">6 个已确认</div></div>
+            <div class="card stat" style="--tint:#ffe7e9"><div class="label">待处理风险</div><div class="value" style="color:var(--danger)">7</div><div class="delta" style="color:var(--danger)">2 个高风险</div></div>
+          </div>
+          <div class="grid two" style="margin-top:16px">
+            <div class="card"><div class="section-head"><h2>作业流概览</h2><a data-goto="workflow">查看作业拓扑 →</a></div><div class="flow-list">
+              <div class="flow-row"><div class="flow-code">TK</div><div><strong>Token 请求主链</strong><div class="flow-meta"><span>8 张表</span><span>6 个作业</span><span>分钟 / 小时</span></div></div><span class="health warn">2 项风险</span></div>
+              <div class="flow-row"><div class="flow-code" style="background:#f1edfb;color:var(--dwd)">DM</div><div><strong>业务维度补充</strong><div class="flow-meta"><span>4 张维表</span><span>3 个关联</span><span>每日同步</span></div></div><span class="health ok">正常</span></div>
+              <div class="flow-row"><div class="flow-code" style="background:#e8f5ef;color:var(--ads)">RP</div><div><strong>报表应用层</strong><div class="flow-meta"><span>3 张 ADS</span><span>8 个指标</span><span>3 个消费方</span></div></div><span class="health warn">1 项风险</span></div>
+            </div></div>
+            <div class="card"><div class="section-head"><h2>需要关注</h2><a data-goto="impact">进入诊断 →</a></div><div class="risk-list">
+              <div class="risk high"><div class="risk-icon">!</div><div><strong>分钟与小时表时间口径不一致</strong><p>小时表使用 ingestion_time，主链使用 event_time。</p></div></div>
+              <div class="risk"><div class="risk-icon">!</div><div><strong>2 个脚本使用 SELECT *</strong><p>上游字段变更可能静默传递到下游。</p></div></div>
+              <div class="risk"><div class="risk-icon">!</div><div><strong>1 条作业依赖尚未确认</strong><p>根据写表—读表关系自动推断。</p></div></div>
+            </div></div>
+          </div>
+        </section>
+
+        <section class="page" id="page-assets">
+          <div class="page-head"><div><div class="eyebrow">Data catalog</div><h1>数据资产</h1><div class="subtle">查看表、字段、时间语义以及它们在加工链路中的位置。</div></div><div class="head-actions"><button class="btn">导出字段字典</button></div></div>
+          <div class="toolbar"><div class="search"><input id="assetSearch" placeholder="搜索表名、字段或中文描述" /></div><select id="layerFilter"><option value="">全部层级</option><option>ODS</option><option>DWD</option><option>DWS</option><option>ADS</option><option>DIM</option></select><select><option>全部作业流</option><option>Token 请求主链</option><option>业务维度补充</option></select><label style="font-size:11px;color:var(--muted)"><input id="riskOnly" type="checkbox" /> 仅看有风险</label></div>
+          <div class="card table-card"><table><thead><tr><th>表</th><th>层级</th><th>数据粒度</th><th>核心时间字段</th><th>字段数</th><th>上下游</th><th>状态</th></tr></thead><tbody id="assetRows"></tbody></table></div>
+        </section>
+
+        <section class="page" id="page-detail">
+          <div class="page-head"><div><div class="eyebrow">Table detail · DWS</div><h1 class="mono">dws_token_minute</h1><div class="subtle">Token 请求分钟聚合宽表</div></div><div class="head-actions"><button class="btn" data-goto="lineage">查看血缘</button><button class="btn primary" data-goto="impact">分析变更</button></div></div>
+          <div class="detail-layout">
+            <div>
+              <div class="card"><div class="info-grid"><div class="info-item"><small>数据层级</small><strong><span class="tag" style="--tag:var(--dws)">DWS</span></strong></div><div class="info-item"><small>数据粒度</small><strong>局点 + 租户 + 模型 + 分钟</strong></div><div class="info-item"><small>更新策略</small><strong>每 5 分钟增量</strong></div><div class="info-item"><small>核心时间</small><strong class="mono">stat_minute</strong></div><div class="info-item"><small>直接上游</small><strong>2 张表</strong></div><div class="info-item"><small>直接下游</small><strong>3 张表</strong></div></div><div class="tabs"><button class="tab active">字段</button><button class="tab">加工逻辑</button><button class="tab">上下游</button><button class="tab">指标</button><button class="tab">数据样例</button></div><div class="table-card"><table><thead><tr><th>字段</th><th>类型</th><th>角色</th><th>来源</th><th>加工方式</th></tr></thead><tbody>
+                <tr><td class="table-name">stat_minute</td><td>TIMESTAMP</td><td><span class="tag" style="--tag:var(--warning)">统计时间</span></td><td class="mono">event_time</td><td class="mono">date_trunc('minute', event_time)</td></tr>
+                <tr><td class="table-name">region_code</td><td>VARCHAR(16)</td><td><span class="tag" style="--tag:var(--ods)">维度</span></td><td class="mono">dim_region.region_code</td><td>维度关联</td></tr>
+                <tr><td class="table-name">model_code</td><td>VARCHAR(64)</td><td><span class="tag" style="--tag:var(--ods)">维度</span></td><td class="mono">dwd.model_code</td><td>直接映射</td></tr>
+                <tr><td class="table-name">request_cnt</td><td>BIGINT</td><td><span class="tag" style="--tag:var(--success)">指标</span></td><td class="mono">request_id</td><td class="mono">count(*)</td></tr>
+                <tr><td class="table-name">success_cnt</td><td>BIGINT</td><td><span class="tag" style="--tag:var(--success)">指标</span></td><td class="mono">status</td><td class="mono">sum(case when status='SUCCESS'...)</td></tr>
+                <tr><td class="table-name">total_token_cnt</td><td>BIGINT</td><td><span class="tag" style="--tag:var(--success)">指标</span></td><td class="mono">input_token + output_token</td><td class="mono">sum(coalesce(...))</td></tr>
+              </tbody></table></div></div>
+            </div>
+            <aside><div class="card card-pad"><h3>加工证据</h3><p class="subtle" style="font-size:11px">sql/token/04_dws_token_minute.sql · 第 18–47 行</p><div class="code"><span class="kw">INSERT INTO</span> dws_token_minute<br><span class="kw">SELECT</span><br>&nbsp; <span class="fn">date_trunc</span>(<span class="str">'minute'</span>, event_time),<br>&nbsp; region_code, model_code,<br>&nbsp; <span class="fn">count</span>(*) request_cnt,<br>&nbsp; <span class="fn">sum</span>(input_token + output_token)<br><span class="kw">FROM</span> dwd_token_request_wide<br><span class="kw">GROUP BY</span> 1, 2, 3;</div></div><div class="card card-pad" style="margin-top:14px"><h3>质量提示</h3><div class="risk" style="padding-bottom:0"><div class="risk-icon">!</div><div><strong>下游时间口径分叉</strong><p>dws_token_hour 使用 ingestion_time 聚合。</p></div></div></div></aside>
+          </div>
+        </section>
+
+        <section class="page" id="page-lineage">
+          <div class="page-head"><div><div class="eyebrow">Lineage explorer</div><h1>血缘分析</h1><div class="subtle">从来源、转换表达式到最终报表，逐层验证每一条加工关系。</div></div></div>
+          <div class="toolbar"><select id="lineageMode"><option>表级血缘</option><option>字段级血缘</option></select><select><option>上下游 3 层</option><option>上下游 5 层</option><option>仅直接关系</option></select><div class="search"><input placeholder="定位表或字段" /></div><button class="btn" id="highlightPath">高亮主链路</button></div>
+          <div class="card lineage-shell"><div class="graph"><div class="lane-labels"><span>RDS / CDM</span><span>ODS</span><span>DWD</span><span>DWS</span><span>ADS</span></div><div class="graph-area" id="graphArea"></div></div><aside class="evidence"><div class="evidence-head"><div class="eyebrow">Selected relation</div><h3 id="evidenceTitle">dwd_token_request_wide</h3></div><div class="evidence-body"><div class="evidence-block"><label>节点说明</label><p id="evidenceDesc">请求明细宽表，通过关联局点、租户与模型维度补充展示信息。</p></div><div class="evidence-block"><label>数据粒度</label><p>一次有效请求一行</p></div><div class="evidence-block"><label>加工脚本</label><p class="mono">03_dwd_enrichment.sql<br>第 14–62 行</p></div><div class="evidence-block"><label>核心关系</label><div class="code"><span class="kw">LEFT JOIN</span> dim_region r<br>&nbsp;<span class="kw">ON</span> d.region_code = r.region_code</div></div><button class="btn primary" style="width:100%" data-goto="detail">打开表详情</button></div></aside></div>
+        </section>
+
+        <section class="page" id="page-workflow">
+          <div class="page-head"><div><div class="eyebrow">Workflow reconstruction</div><h1>作业流</h1><div class="subtle">根据 SQL 读写关系重建加工顺序，并区分已确认与自动推断依赖。</div></div><div class="head-actions"><button class="btn">确认全部可靠依赖</button></div></div>
+          <div class="toolbar"><select><option>Token 请求主链</option><option>业务维度补充</option><option>报表应用层</option></select><span class="subtle" style="font-size:11px">● 实线：已确认　◌ 虚线：自动推断</span></div>
+          <div class="card workflow-canvas"><div class="job-chain"><div class="job"><span class="num">01 · MIGRATION</span><strong>CDM 搬运</strong><small>RDS → ODS<br>每 5 分钟</small></div><span class="job-line"></span><div class="job"><span class="num">02 · CLEAN</span><strong>ODS 标准化</strong><small>清洗、类型转换<br>2 张输出表</small></div><span class="job-line"></span><div class="job"><span class="num">03 · DETAIL</span><strong>DWD 明细</strong><small>过滤无效请求<br>1 个去重规则</small></div><span class="job-line"></span><div class="job"><span class="num">04 · ENRICH</span><strong>维度补充</strong><small>关联 4 张维表<br>LEFT JOIN</small></div><span class="job-line"></span><div class="job"><span class="num">05 · AGG</span><strong>分钟聚合</strong><small>8 个指标<br>4 个维度</small></div></div><div class="branch" style="margin-left:736px"><div class="job"><span class="num">06A · REPORT</span><strong>实时 ADS</strong><small>每 5 分钟<br>已确认</small></div><div class="job" style="border-style:dashed"><span class="num" style="color:var(--warning)">06B · INFERRED</span><strong>小时聚合</strong><small>依赖由 SQL 推断<br>待确认</small></div></div></div>
+          <div class="grid cols-3" style="margin-top:16px"><div class="card card-pad"><div class="eyebrow">6 jobs</div><h3>主链完整</h3><p class="subtle">所有写入表均存在上游来源。</p></div><div class="card card-pad"><div class="eyebrow" style="color:var(--warning)">1 inferred</div><h3>待确认依赖</h3><p class="subtle">分钟聚合 → 小时聚合尚无调度证据。</p></div><div class="card card-pad"><div class="eyebrow" style="color:var(--success)">0 cycles</div><h3>无循环依赖</h3><p class="subtle">当前 DAG 可以正常排序。</p></div></div>
+        </section>
+
+        <section class="page" id="page-metrics">
+          <div class="page-head"><div><div class="eyebrow">Metric registry</div><h1>指标口径</h1><div class="subtle">技术公式、统计粒度、时间口径和最终消费位置统一管理。</div></div><div class="head-actions"><button class="btn">导出指标字典</button></div></div>
+          <div class="toolbar"><div class="search"><input id="metricSearch" placeholder="搜索指标名称或字段" /></div><select><option>全部时间粒度</option><option>分钟</option><option>小时</option><option>天</option></select><select><option>全部状态</option><option>已确认</option><option>待确认</option></select></div>
+          <div class="metric-grid" id="metricGrid"></div>
+        </section>
+
+        <section class="page" id="page-impact">
+          <div class="page-head"><div><div class="eyebrow">Change intelligence</div><h1>变更影响分析</h1><div class="subtle">提交一个拟议变更，查看结构、语义和历史回刷影响。不会执行生产变更。</div></div></div>
+          <div class="grid two"><div class="card"><div class="section-head"><h2>定义变更</h2><span class="health ok">只读分析</span></div><div class="impact-form"><div class="field full"><label>快捷案例</label><select id="quickCase"><option value="region">修改 region_code 字段长度</option><option value="source">新增 source_type 维度字段</option><option value="logic">调整 success_rate 过滤口径</option></select></div><div class="field full"><label>变更对象</label><input id="changeObject" class="mono" value="dwd.dwd_token_request.region_code" /></div><div class="field"><label>变更类型</label><select id="changeType"><option>字段类型变化</option><option>新增字段</option><option>加工逻辑变化</option></select></div><div class="field"><label>分析范围</label><select><option>完整下游链路</option><option>直接下游</option></select></div><div class="field"><label>修改前</label><input id="beforeValue" class="mono" value="VARCHAR(16)" /></div><div class="field"><label>修改后</label><input id="afterValue" class="mono" value="VARCHAR(32)" /></div><div class="field full"><button class="btn primary" id="runImpact">开始分析影响</button></div></div></div>
+            <div class="card card-pad"><h3>分析范围</h3><p class="subtle">系统会沿字段级血缘遍历所有传递下游，并检查 SQL 表达式、指标粒度、时间窗口和历史分区。</p><div class="risk"><div class="risk-icon">i</div><div><strong>静态分析边界</strong><p>未导入的 BI、Shell 和动态 SQL 消费方会标记为未知风险。</p></div></div></div></div>
+          <div class="impact-summary" id="impactResult"><div class="risk-score"><div class="score-circle"><strong>66</strong></div><div><div class="eyebrow" style="color:var(--warning)">中高风险</div><h2>变更将传递到 11 个下游对象</h2><div class="subtle">3 个脚本需要修改，2 张 ADS 表需要验证，历史回刷待确认。</div></div></div><div class="grid two" style="margin-top:16px"><div class="card"><div class="section-head"><h2>影响传播路径</h2><a data-goto="lineage">在血缘图中打开 →</a></div><div class="impact-tree"><div class="tree-row" style="--depth:0"><span class="tag" style="--tag:var(--dwd)">DWD</span><strong class="mono">region_code</strong></div><div class="tree-row" style="--depth:1"><span class="tree-line"></span><span class="tag" style="--tag:var(--dws)">DWS</span><span class="mono">dws_token_minute.region_code</span></div><div class="tree-row" style="--depth:2"><span class="tree-line"></span><span class="tag" style="--tag:var(--ads)">ADS</span><span class="mono">ads_token_realtime.region_code</span></div><div class="tree-row" style="--depth:2"><span class="tree-line"></span><span class="tag" style="--tag:var(--dws)">DWS</span><span class="mono">dws_token_hour.region_code</span></div><div class="tree-row" style="--depth:3"><span class="tree-line"></span><span class="tag" style="--tag:var(--ads)">ADS</span><span class="mono">ads_token_daily.region_code</span></div></div></div><div class="card"><div class="section-head"><h2>推荐修改顺序</h2></div><div class="flow-list"><div class="flow-row"><div class="flow-code">1</div><div><strong>修改 DWD DDL</strong><div class="table-desc">dwd_token_request.sql</div></div></div><div class="flow-row"><div class="flow-code">2</div><div><strong>检查 3 个加工脚本</strong><div class="table-desc">包含 2 个 SELECT *</div></div></div><div class="flow-row"><div class="flow-code">3</div><div><strong>验证 2 张 ADS</strong><div class="table-desc">发现固定 VARCHAR(16) 转换</div></div></div></div></div></div></div>
+        </section>
+
+        <section class="page" id="page-compare">
+          <div class="page-head"><div><div class="eyebrow">Semantic diff</div><h1>版本比较</h1><div class="subtle">忽略格式噪声，定位 DDL、血缘和指标口径的真实变化。</div></div></div>
+          <div class="toolbar"><select id="compareLeft"><option value="previous">版本 2026.07.20</option></select><span>→</span><select id="compareRight"><option value="current">版本 2026.07.23（当前）</option></select><button class="btn primary" id="runCompare">重新比较</button></div>
+          <div class="grid cols-4"><div class="card stat" style="--tint:#e6f5ee"><div class="label">新增</div><div class="value" style="color:var(--success)">3</div></div><div class="card stat" style="--tint:#fff0df"><div class="label">修改</div><div class="value" style="color:var(--warning)">5</div></div><div class="card stat" style="--tint:#ffe9eb"><div class="label">删除</div><div class="value" style="color:var(--danger)">1</div></div><div class="card stat" style="--tint:#e8f1fb"><div class="label">受影响报表</div><div class="value">2</div></div></div>
+          <div class="card" style="margin-top:16px"><div class="tabs"><button class="tab active">全部变化</button><button class="tab">结构变化</button><button class="tab">加工逻辑</button><button class="tab">指标口径</button><button class="tab">血缘变化</button></div><div class="change"><span class="change-type add">＋ 新增字段</span><div><strong class="mono">dwd_token_request.source_type</strong><div class="table-desc">新增流量来源维度，尚未传播到下游宽表。</div></div><button class="btn" data-goto="impact">分析影响</button></div><div class="change"><span class="change-type modify">~ 逻辑修改</span><div><strong class="mono">success_cnt</strong><div class="table-desc">过滤条件增加 status &lt;&gt; 'TEST'，日报与实时口径产生差异。</div></div><button class="btn" data-goto="metrics">查看指标</button></div><div class="change"><span class="change-type modify">~ 类型修改</span><div><strong class="mono">region_code</strong><div class="table-desc">VARCHAR(16) → VARCHAR(32)，影响 11 个下游对象。</div></div><button class="btn" data-goto="impact">分析影响</button></div><div class="change"><span class="change-type delete">− 删除表</span><div><strong class="mono">ads_old_token_report</strong><div class="table-desc">未发现内部下游，仍需确认外部 BI 消费方。</div></div><button class="btn">查看证据</button></div></div>
+        </section>
+
+        <section class="page" id="page-assistant">
+          <div class="page-head"><div><div class="eyebrow">Evidence-grounded assistant</div><h1>数据助手</h1><div class="subtle">基于已解析的表、字段、SQL 和血缘回答，并给出可追溯证据。</div></div></div>
+          <div class="card chat"><aside class="chat-side"><h3 style="margin-bottom:14px">建议提问</h3><div class="suggestion">request_success_rate 是怎么计算出来的？</div><div class="suggestion">为什么分钟表和小时表请求量可能对不上？</div><div class="suggestion">修改 region_code 会影响哪些报表？</div><div class="suggestion">哪些 ADS 使用 event_time？</div></aside><div class="chat-main"><div class="messages" id="messages"><div class="msg user">request_success_rate 是怎么计算出来的？</div><div class="msg ai"><div class="avatar">✦</div><div class="bubble"><strong>request_success_rate</strong> 来自分钟聚合表中的两个指标：<div class="code" style="margin:10px 0">success_cnt / <span class="fn">nullif</span>(request_cnt, 0)</div><strong>success_cnt</strong> 统计 <span class="mono">status = 'SUCCESS'</span> 的请求；数据粒度为“局点 + 租户 + 模型 + 分钟”，使用 <span class="mono">event_time</span> 截断到分钟。<br><span class="evidence-link">04_dws_token_minute.sql · L31</span><span class="evidence-link">指标：success_rate</span></div></div></div><div class="chat-input"><input id="chatInput" placeholder="询问字段来源、指标口径或变更影响…" /><button class="btn primary" id="sendChat">发送</button></div></div></div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <div class="drawer-overlay" id="drawer" role="dialog" aria-modal="true" aria-labelledby="wizardTitle"><div class="drawer import-drawer">
+    <div class="wizard-head"><button class="drawer-close" aria-label="关闭导入向导">×</button><div class="eyebrow">Import readiness</div><h2 id="wizardTitle">导入项目资料</h2><div class="wizard-mode" id="wizardMode">正在确认连接模式</div>
+      <div class="wizard-steps" aria-label="导入进度">
+        <div class="wizard-step active" data-wstep="1"><i></i><strong>项目</strong><span>选择归属</span></div>
+        <div class="wizard-step" data-wstep="2"><i></i><strong>准备</strong><span>了解目录</span></div>
+        <div class="wizard-step" data-wstep="3"><i></i><strong>检查</strong><span>上传前预检</span></div>
+        <div class="wizard-step" data-wstep="4"><i></i><strong>分析</strong><span>确认并完成</span></div>
+      </div>
+    </div>
+    <div class="wizard-body">
+      <section class="wizard-panel active" data-wpanel="1">
+        <h3>这批资料属于哪个项目？</h3><p class="subtle">相关作业流如果会互相引用表，建议放进同一个项目，跨链路血缘才能自动连接。</p>
+        <div class="choice-grid">
+          <label class="choice-card"><input type="radio" name="projectMode" value="existing" checked><strong>加入现有项目</strong><p>作为当前项目的一个新分析版本。</p></label>
+          <label class="choice-card"><input type="radio" name="projectMode" value="new"><strong>创建新项目</strong><p>适合独立业务域或第一批资料。</p></label>
+        </div>
+        <div class="field" id="existingProjectField"><label for="wizardProjectSelect">选择项目</label><select id="wizardProjectSelect"><option value="">正在读取项目…</option></select></div>
+        <div class="field" id="newProjectField" hidden><label for="importProjectName">项目名称</label><input id="importProjectName" placeholder="例如：Token 请求流量分析" autocomplete="off"></div>
+        <div class="field" style="margin-top:12px"><label for="importVersionNote">版本说明（可选）</label><input id="importVersionNote" placeholder="例如：增加 source_type 维度"></div>
+      </section>
+      <section class="wizard-panel" data-wpanel="2">
+        <h3>按这个结构准备项目包</h3><p class="subtle">DDL 与加工 SQL 是核心输入；作业清单和少量脱敏样例会提高顺序与字段语义判断的准确度。</p>
+        <div class="package-tabs"><button class="btn package-tab active" data-package="minimum">最小可用</button><button class="btn package-tab" data-package="recommended">推荐完整</button></div>
+        <div class="package-tree" id="packageTree" aria-live="polite"></div>
+        <div class="legend"><span><b style="background:#7dd5df"></b>必需</span><span><b style="background:#f1bc73"></b>推荐</span><span><b style="background:#8fa4b8"></b>可选</span></div>
+        <div class="download-row"><button class="btn" id="downloadBlankTemplate">↓ 下载空白模板</button><button class="btn" id="downloadDemoPackage">↓ 下载演示项目包</button></div>
+        <p class="wizard-help">不要上传全量生产数据、数据库账号、密钥或调度平台密码。样例数据建议每表 20～100 行并提前脱敏。</p>
+      </section>
+      <section class="wizard-panel" data-wpanel="3">
+        <h3>选择 ZIP 并执行上传前检查</h3><p class="subtle">预检只检查包结构和可识别内容，不创建分析版本。只有后端真实返回的结果才会标记为通过。</p>
+        <label class="upload-zone" for="importFile"><input id="importFile" type="file" accept=".zip"><strong>点击选择 ZIP 项目包</strong><span class="subtle">仅接受 .zip；建议包含 ddl/ 与 sql/</span></label>
+        <div class="file-meta" id="fileMeta"><div class="file-icon">ZIP</div><div><strong id="fileName">—</strong><small id="fileSize">—</small></div><button class="btn" id="replaceFile" style="margin-left:auto">重新选择</button></div>
+        <div class="preflight" id="preflightArea"><div class="load-state"><strong>尚未执行预检</strong>选择文件后，点击“检查项目包”。</div></div>
+      </section>
+      <section class="wizard-panel" data-wpanel="4">
+        <div id="importConfirm">
+          <h3>确认上传并开始分析</h3><p class="subtle">系统将保存一个新版本，解析 DDL、SQL、字段血缘、指标和作业依赖。分析过程不会执行上传的 SQL。</p>
+          <div class="confirm-box"><div class="confirm-row"><span>目标项目</span><strong id="confirmProject">—</strong></div><div class="confirm-row"><span>项目包</span><strong id="confirmFile">—</strong></div><div class="confirm-row"><span>预检状态</span><strong id="confirmPreflight">—</strong></div><div class="confirm-row"><span>版本说明</span><strong id="confirmNote">—</strong></div></div>
+        </div>
+        <div id="importComplete" hidden><div class="eyebrow">Analysis complete</div><h3>项目版本已完成分析</h3><p class="subtle" id="completeText">后端已返回本次分析摘要。</p><div class="summary-grid" id="importSummary"></div><div class="download-row"><button class="btn primary" id="gotoAssets">进入数据资产</button><button class="btn" id="gotoLineage">查看血缘图</button></div></div>
+        <div class="import-progress" id="importProgress" role="status" aria-live="polite"></div>
+      </section>
+      <div class="drawer-actions"><button class="btn" id="wizardBack">上一步</button><button class="btn" id="wizardCancel">取消</button><button class="btn primary" id="wizardNext">下一步</button></div>
+    </div>
+  </div></div>
+  <div class="toast" id="toast">操作已完成</div>
+
+  <script src="./mock-data.js"></script>
+  <script>
+    const fallbackTables = [
+      {name:'rds.token_request',desc:'RDS Token 请求源表',layer:'SOURCE',grain:'一次请求一行',time:'created_at',fields:24,relation:'0 / 1',risk:false},
+      {name:'ods.ods_token_request',desc:'Token 请求原始数据',layer:'ODS',grain:'一次请求一行',time:'request_time',fields:28,relation:'1 / 2',risk:true},
+      {name:'dwd.dwd_token_request',desc:'清洗后的有效请求明细',layer:'DWD',grain:'一次有效请求一行',time:'event_time',fields:32,relation:'1 / 1',risk:false},
+      {name:'dwd.dwd_token_request_wide',desc:'补充局点、租户与模型维度',layer:'DWD',grain:'一次有效请求一行',time:'event_time',fields:46,relation:'5 / 2',risk:false},
+      {name:'dws.dws_token_minute',desc:'Token 请求分钟聚合宽表',layer:'DWS',grain:'局点+租户+模型+分钟',time:'stat_minute',fields:18,relation:'1 / 3',risk:true},
+      {name:'dws.dws_token_hour',desc:'Token 请求小时聚合表',layer:'DWS',grain:'局点+租户+模型+小时',time:'stat_hour',fields:17,relation:'1 / 2',risk:true},
+      {name:'ads.ads_token_realtime',desc:'Token 实时监控报表',layer:'ADS',grain:'局点+模型+分钟',time:'stat_minute',fields:14,relation:'1 / 0',risk:false},
+      {name:'ads.ads_token_daily',desc:'Token 运营日报',layer:'ADS',grain:'局点+模型+天',time:'stat_date',fields:16,relation:'1 / 0',risk:true},
+      {name:'dim.dim_region',desc:'局点维度',layer:'DIM',grain:'一个局点一行',time:'updated_at',fields:12,relation:'1 / 2',risk:false},
+      {name:'dim.dim_tenant',desc:'租户维度',layer:'DIM',grain:'一个租户一行',time:'updated_at',fields:15,relation:'1 / 1',risk:false}
+    ];
+    let tables = (window.DATAFLOW_MOCK && window.DATAFLOW_MOCK.tables) || fallbackTables;
+    const demoTables = tables.slice();
+    const layerColor = {SOURCE:'var(--source)',ODS:'var(--ods)',DWD:'var(--dwd)',DWS:'var(--dws)',ADS:'var(--ads)',DIM:'#55718c'};
+    function renderAssets(){
+      const q=document.getElementById('assetSearch').value.toLowerCase(), layer=document.getElementById('layerFilter').value, risk=document.getElementById('riskOnly').checked;
+      const rows=tables.filter(t=>(!q||(t.name+' '+(t.desc||'')).toLowerCase().includes(q))&&(!layer||t.layer===layer)&&(!risk||t.risk)).map(t=>`<tr data-table="${t.name}"><td><div class="table-name">${t.name}</div><div class="table-desc">${t.desc||''}</div></td><td><span class="tag" style="--tag:${layerColor[t.layer]||'#55718c'}">${t.layer}</span></td><td>${t.grain||'—'}</td><td class="mono">${t.time||'—'}</td><td>${t.fields||0}</td><td>${t.relation||'—'}</td><td>${t.risk?'<span class="tiny-risk"></span>待检查':'<span style="color:var(--success)">正常</span>'}</td></tr>`).join('');
+      document.getElementById('assetRows').innerHTML=rows||'<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:34px">没有符合条件的数据资产，请调整筛选条件。</td></tr>';
+      document.querySelectorAll('#assetRows tr[data-table]').forEach(r=>r.onclick=()=>navigate('detail'));
+    }
+    ['assetSearch','layerFilter','riskOnly'].forEach(id=>document.getElementById(id).addEventListener('input',renderAssets)); renderAssets();
+    let metrics=[
+      ['请求总量','request_cnt','COUNT(*)','分钟','已确认'],['成功请求量','success_cnt',"SUM(CASE status='SUCCESS')",'分钟','已确认'],
+      ['失败请求量','failure_cnt',"SUM(CASE status='FAILED')",'分钟','已确认'],['总 Token 数','total_token_cnt','SUM(input_token + output_token)','分钟','已确认'],
+      ['输入 Token 数','input_token_cnt','SUM(input_token)','分钟','已确认'],['输出 Token 数','output_token_cnt','SUM(output_token)','分钟','已确认'],
+      ['请求成功率','success_rate','success_cnt / NULLIF(request_cnt, 0)','分钟','待确认'],['平均响应时长','avg_latency_ms','AVG(latency_ms)','分钟','已确认']
+    ];
+    const demoMetrics = metrics.map(m=>m.slice());
+    function renderMetrics(){const q=document.getElementById('metricSearch').value.toLowerCase();document.getElementById('metricGrid').innerHTML=metrics.filter(m=>(m[0]+m[1]).toLowerCase().includes(q)).map(m=>`<div class="card metric-card"><div style="display:flex;justify-content:space-between"><div><h3>${m[0]}</h3><div class="table-desc mono">${m[1]}</div></div><span class="health ${m[4]==='已确认'?'ok':'warn'}">${m[4]}</span></div><div class="formula">${m[2]}</div><div class="metric-foot"><span>粒度：${m[3]}</span><span>4 个维度 · 3 个消费方</span></div></div>`).join('')};document.getElementById('metricSearch').oninput=renderMetrics;renderMetrics();
+    let nodes=[
+      {x:8,y:160,n:'rds.token_request',l:'SOURCE',d:'请求源表'}, {x:160,y:160,n:'ods_token_request',l:'ODS',d:'原始请求'},
+      {x:308,y:75,n:'dwd_token_request',l:'DWD',d:'有效请求明细'}, {x:308,y:255,n:'dim_region',l:'DIM',d:'局点维度'},
+      {x:458,y:160,n:'dwd_request_wide',l:'DWD',d:'请求明细宽表'}, {x:610,y:65,n:'dws_token_minute',l:'DWS',d:'分钟聚合'},
+      {x:610,y:255,n:'dws_token_hour',l:'DWS',d:'小时聚合'}, {x:755,y:35,n:'ads_realtime',l:'ADS',d:'实时监控'},
+      {x:755,y:265,n:'ads_daily',l:'ADS',d:'运营日报'}
+    ];
+    const demoNodes = nodes.map(n=>({...n}));
+    let graphEdges=[];
+    function addEdge(area,a,b,hot=false){const ax=a.x+120,ay=a.y+40,bx=b.x,by=b.y+40,dx=bx-ax,dy=by-ay,len=Math.sqrt(dx*dx+dy*dy),ang=Math.atan2(dy,dx)*180/Math.PI;const e=document.createElement('div');e.className='edge'+(hot?' hot':'');e.style.cssText=`left:${ax}px;top:${ay}px;width:${len}px;transform:rotate(${ang}deg)`;area.appendChild(e)}
+    function renderGraph(){const area=document.getElementById('graphArea');area.innerHTML='';const fallbackPairs=[[0,1],[1,2],[2,4],[3,4],[4,5],[5,6],[5,7],[6,8]];const byId=new Map(nodes.map((n,i)=>[String(n.id||n.n),i]));const pairs=graphEdges.length?graphEdges.map(e=>[byId.get(String(e.source)),byId.get(String(e.target))]).filter(p=>p[0]!==undefined&&p[1]!==undefined):fallbackPairs.filter(p=>nodes[p[0]]&&nodes[p[1]]);pairs.forEach((p,i)=>addEdge(area,nodes[p[0]],nodes[p[1]],i<6));nodes.forEach((n,i)=>{const el=document.createElement('div');el.className='node'+(i===4?' selected':'');el.style.cssText=`left:${n.x}px;top:${n.y}px;--c:${layerColor[n.l]||'#55718c'}`;el.tabIndex=0;el.setAttribute('role','button');el.setAttribute('aria-label',`${n.l} 表 ${n.n}，${n.d}`);el.innerHTML=`<span class="layer">${n.l}</span><strong>${n.n}</strong><small>${n.d}</small>`;el.onclick=()=>{document.querySelectorAll('.node').forEach(x=>x.classList.remove('selected'));el.classList.add('selected');document.getElementById('evidenceTitle').textContent=n.n;document.getElementById('evidenceDesc').textContent=n.d+'，当前节点已在血缘图中定位。';};el.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();el.click()}};area.appendChild(el)})}renderGraph();
+    function navigate(page){document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));const target=document.getElementById('page-'+page);if(target)target.classList.add('active');document.querySelectorAll('.nav button').forEach(b=>b.classList.toggle('active',b.dataset.page===page));document.getElementById('sidebar').classList.remove('open');window.scrollTo({top:0,behavior:'smooth'})}
+    document.querySelectorAll('[data-page],[data-goto]').forEach(el=>el.onclick=()=>navigate(el.dataset.page||el.dataset.goto));
+    document.querySelectorAll('.pipe-node').forEach(n=>n.onclick=()=>{navigate('assets');document.getElementById('layerFilter').value=n.dataset.layer==='SOURCE'?'':n.dataset.layer;renderAssets()});
+    document.getElementById('menuBtn').onclick=()=>document.getElementById('sidebar').classList.toggle('open');
+    const drawer=document.getElementById('drawer');document.getElementById('importBtn').onclick=()=>drawer.classList.add('open');drawer.querySelector('.drawer-close').onclick=()=>drawer.classList.remove('open');drawer.onclick=e=>{if(e.target===drawer)drawer.classList.remove('open')};
+    const toast=document.getElementById('toast');function showToast(t){toast.textContent=t;toast.classList.add('show');setTimeout(()=>toast.classList.remove('show'),2200)}
+    document.getElementById('highlightPath').onclick=()=>showToast('已高亮 RDS → ADS 主链路');
+    const cases={region:['dwd.dwd_token_request.region_code','字段类型变化','VARCHAR(16)','VARCHAR(32)'],source:['dwd.dwd_token_request.source_type','新增字段','—','VARCHAR(32)'],logic:['dws.dws_token_minute.success_rate','加工逻辑变化',"status = 'SUCCESS'","status = 'SUCCESS' AND source_type <> 'TEST'"]};
+    document.getElementById('quickCase').onchange=e=>{const v=cases[e.target.value];document.getElementById('changeObject').value=v[0];document.getElementById('changeType').value=v[1];document.getElementById('beforeValue').value=v[2];document.getElementById('afterValue').value=v[3]};
+    document.getElementById('runImpact').onclick=()=>{const b=document.getElementById('runImpact');b.textContent='正在沿血缘分析…';b.disabled=true;setTimeout(()=>{b.textContent='重新分析';b.disabled=false;document.getElementById('impactResult').classList.add('show');document.getElementById('impactResult').scrollIntoView({behavior:'smooth',block:'start'});showToast('影响分析完成：发现 11 个下游对象')},700)};
+    function sendQuestion(text){if(!text.trim())return;const messages=document.getElementById('messages');messages.insertAdjacentHTML('beforeend',`<div class="msg user">${text.replace(/[<>]/g,'')}</div><div class="msg ai"><div class="avatar">✦</div><div class="bubble">我沿字段级血缘检查了相关对象。该问题涉及 <strong>dws_token_minute</strong> 与 2 张 ADS 表；主要证据来自分钟聚合脚本和指标定义。<br><span class="evidence-link">查看血缘路径</span><span class="evidence-link">SQL 证据 · L18–47</span></div></div>`);messages.scrollTop=messages.scrollHeight}
+    document.getElementById('sendChat').onclick=()=>{const i=document.getElementById('chatInput');sendQuestion(i.value);i.value=''};document.getElementById('chatInput').onkeydown=e=>{if(e.key==='Enter')document.getElementById('sendChat').click()};document.querySelectorAll('.suggestion').forEach(s=>s.onclick=()=>sendQuestion(s.textContent));
+    document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{const p=t.parentElement;p.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));t.classList.add('active');showToast('已切换到“'+t.textContent+'”')});
+    const initialPage=new URLSearchParams(location.search).get('page');
+    if(initialPage)navigate(initialPage);
+    if(new URLSearchParams(location.search).get('result')==='1')document.getElementById('impactResult').classList.add('show');
+    window.DFI_UI={navigate,renderAssets,renderMetrics,renderGraph,showToast,setTables(v){tables=v},setMetrics(v){metrics=v},setNodes(v){nodes=v},setEdges(v){graphEdges=v||[]},restoreDemo(){tables=demoTables.slice();metrics=demoMetrics.map(m=>m.slice());nodes=demoNodes.map(n=>({...n}));graphEdges=[];renderAssets();renderMetrics();renderGraph()}};
+  </script>
+  <script src="./product-app.js"></script>
+</body>
+</html>

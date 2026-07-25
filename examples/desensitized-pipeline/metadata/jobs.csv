@@ -1,0 +1,6 @@
+job_name,script_path,output_table,upstream_jobs,order_hint,confidence
+build_dwd_fact_request,sql/dwd/01_build_dwd_fact_request.sql,schema.dwd_fact_request,,10,medium
+build_dwd_dim_model,sql/dwd/02_build_dwd_dim_model.sql,schema.dwd_dim_model,,20,medium
+build_dwd_dim_service,sql/dwd/03_build_dwd_dim_service.sql,schema.dwd_dim_service,,20,medium
+build_dws_fact_enriched,sql/dws/01_build_dws_fact_enriched.sql,schema.dws_fact_enriched,build_dwd_fact_request|build_dwd_dim_model|build_dwd_dim_service,30,high
+build_dws_agg_minute,sql/dws/02_build_dws_agg_minute.sql,schema.dws_agg_minute,build_dws_fact_enriched,40,high

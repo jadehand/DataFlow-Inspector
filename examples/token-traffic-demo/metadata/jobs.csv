@@ -1,0 +1,9 @@
+job_name,script_path,schedule,upstream_jobs,owner,relation_status
+migration_rds_to_ods,sql/01_migration_rds_to_ods.sql,0 * * * *,,"data-platform",confirmed
+ods_to_dwd,sql/02_ods_to_dwd.sql,5 * * * *,migration_rds_to_ods,"data-platform",confirmed
+dwd_enrichment,sql/03_dwd_enrichment.sql,10 * * * *,ods_to_dwd,"data-platform",confirmed
+dws_minute,sql/04_dws_minute.sql,15 * * * *,dwd_enrichment,"data-platform",confirmed
+dws_hour,sql/05_dws_hour.sql,20 * * * *,dwd_enrichment,"data-platform",confirmed
+ads_realtime,sql/06_ads_realtime.sql,18 * * * *,dws_minute,"report-team",confirmed
+ads_daily,sql/07_ads_daily.sql,30 1 * * *,dwd_enrichment,"report-team",inferred
+ads_region,sql/08_ads_region.sql,40 1 * * *,ads_daily,"report-team",confirmed

@@ -1,0 +1,3 @@
+region_code,region_name,bureau_code,bureau_name,enabled_flag
+NORTH_01,华北局点一,BJ,北京局,Y
+EAST_02,华东局点二,SH,上海局,Y
