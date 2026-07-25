@@ -1,0 +1,394 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>DataFlow Inspector · 数据加工链路分析台</title>
+  <style>
+    :root {
+      --canvas:#f3f6f8; --surface:#fff; --ink:#172131; --muted:#687487;
+      --navy:#122238; --navy-2:#1b304b; --line:#dce3e9; --accent:#147c91;
+      --accent-soft:#e2f2f4; --danger:#c3454f; --warning:#d98324; --success:#278d66;
+      --source:#758195; --ods:#3478c8; --dwd:#7759c8; --dws:#d98324; --ads:#278d66;
+      --shadow:0 12px 30px rgba(23,33,49,.08); --radius:12px;
+      font-family:Inter,"PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--canvas);color:var(--ink);font-size:14px}
+    button,input,select,textarea{font:inherit}
+    button{cursor:pointer}
+    button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:3px solid rgba(20,124,145,.25);outline-offset:2px}
+    .mono{font-family:"JetBrains Mono","SFMono-Regular",Consolas,monospace}
+    .app{min-height:100vh;display:grid;grid-template-columns:244px 1fr}
+    .sidebar{background:var(--navy);color:#dce7f2;position:fixed;width:244px;height:100vh;padding:24px 16px;z-index:20}
+    .brand{display:flex;align-items:center;gap:12px;padding:0 8px 24px;border-bottom:1px solid rgba(255,255,255,.1)}
+    .brand-mark{width:38px;height:38px;border-radius:10px;background:linear-gradient(135deg,#55aabd,#147c91);position:relative;box-shadow:inset 0 0 0 1px rgba(255,255,255,.2)}
+    .brand-mark:before,.brand-mark:after{content:"";position:absolute;left:9px;right:9px;height:3px;background:#fff;border-radius:3px}
+    .brand-mark:before{top:12px;box-shadow:0 6px 0 rgba(255,255,255,.72)}
+    .brand-mark:after{top:24px;right:16px}
+    .brand strong{display:block;font-size:15px;letter-spacing:.2px}.brand small{color:#91a7bc;font-size:11px}
+    .nav{padding-top:18px}.nav-label{font-size:10px;letter-spacing:1.5px;color:#7890a8;padding:0 12px;margin:16px 0 8px;text-transform:uppercase}
+    .nav button{width:100%;border:0;background:transparent;color:#aebfd0;text-align:left;padding:10px 12px;border-radius:8px;margin:2px 0;display:flex;align-items:center;gap:11px;transition:.18s}
+    .nav button:hover{background:rgba(255,255,255,.06);color:#fff}.nav button.active{background:#21415b;color:#fff;box-shadow:inset 3px 0 0 #51b1c1}.nav button:disabled{opacity:.42;cursor:not-allowed;background:transparent;box-shadow:none}
+    .nav .ico{width:18px;height:18px;display:grid;place-items:center;font-size:15px}
+    .side-foot{position:absolute;bottom:20px;left:16px;right:16px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08);border-radius:10px;padding:12px}
+    .side-foot .status{display:flex;align-items:center;gap:8px;font-size:12px}.dot{width:8px;height:8px;background:#5bc996;border-radius:50%;box-shadow:0 0 0 4px rgba(91,201,150,.12)}
+    .main{grid-column:2;min-width:0}
+    .topbar{height:68px;background:rgba(255,255,255,.92);border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 30px;position:sticky;top:0;z-index:10;backdrop-filter:blur(10px)}
+    .project-switch{display:flex;align-items:center;gap:10px}.project-switch small{color:var(--muted)}.project-switch strong{font-size:15px}
+    .top-actions{display:flex;gap:8px;align-items:center}
+    .btn{border:1px solid var(--line);background:var(--surface);color:var(--ink);border-radius:8px;padding:9px 13px;font-weight:600}
+    .btn:hover{border-color:#b8c5cf;background:#f9fbfc}.btn.primary{background:var(--accent);border-color:var(--accent);color:white}.btn.danger{color:var(--danger);border-color:#efcbd0;background:#fff8f8}
+    .icon-btn{width:38px;height:38px;padding:0;display:grid;place-items:center}
+    .content{padding:28px 30px 60px;max-width:1600px;margin:auto}
+    .page{display:none}.page.active{display:block;animation:fade .18s ease}
+    @keyframes fade{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
+    .page-head{display:flex;justify-content:space-between;gap:20px;align-items:flex-start;margin-bottom:22px}
+    .eyebrow{color:var(--accent);font-size:11px;font-weight:800;letter-spacing:1.2px;text-transform:uppercase;margin-bottom:7px}
+    h1{font-size:26px;line-height:1.2;margin:0 0 7px;letter-spacing:-.5px}h2{font-size:18px;margin:0}h3{font-size:15px;margin:0}
+    .subtle{color:var(--muted);line-height:1.65}.head-actions{display:flex;gap:8px}
+    .pipeline{background:var(--navy);border-radius:14px;color:#dbe7f1;padding:18px 22px;display:flex;align-items:center;gap:0;box-shadow:var(--shadow);margin-bottom:22px;overflow:auto}
+    .pipe-stage{display:flex;align-items:center;min-width:max-content}.pipe-node{display:flex;align-items:center;gap:9px;padding:9px 12px;border-radius:8px;border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.04);transition:.2s}
+    .pipe-node:hover,.pipe-node.active{background:rgba(255,255,255,.11)}.pipe-node i{width:9px;height:9px;border-radius:3px;background:var(--c)}
+    .pipe-node small{color:#89a0b5;margin-left:3px}.pipe-line{width:32px;height:1px;background:#4a6077;position:relative}.pipe-line:after{content:"";position:absolute;right:0;top:-3px;border-left:5px solid #4a6077;border-top:3px solid transparent;border-bottom:3px solid transparent}
+    .pipe-line.pulse:before{content:"";position:absolute;width:8px;height:3px;border-radius:4px;background:#62c4d1;top:-1px;animation:flow 2s infinite}
+    @keyframes flow{from{left:0}to{left:25px}}
+    .grid{display:grid;gap:16px}.grid.cols-4{grid-template-columns:repeat(4,1fr)}.grid.cols-3{grid-template-columns:repeat(3,1fr)}.grid.two{grid-template-columns:minmax(0,1.65fr) minmax(300px,.85fr)}
+    .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:0 2px 4px rgba(23,33,49,.02)}
+    .card-pad{padding:20px}.stat{padding:18px;position:relative;overflow:hidden}.stat:after{content:"";position:absolute;right:-10px;bottom:-22px;width:70px;height:70px;border-radius:50%;background:var(--tint)}
+    .stat .label{color:var(--muted);font-size:12px;margin-bottom:11px}.stat .value{font-size:28px;font-weight:750;letter-spacing:-1px}.stat .delta{font-size:11px;margin-top:5px;color:var(--success)}
+    .section-head{padding:17px 19px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between}
+    .section-head a,.link{color:var(--accent);font-weight:650;text-decoration:none;font-size:12px;cursor:pointer}
+    .flow-list{padding:4px 18px 12px}.flow-row{display:grid;grid-template-columns:34px 1fr auto;gap:12px;align-items:center;padding:14px 0;border-bottom:1px solid #edf1f4}.flow-row:last-child{border:0}
+    .flow-code{width:34px;height:34px;border-radius:9px;background:var(--accent-soft);color:var(--accent);display:grid;place-items:center;font-weight:800;font-size:11px}
+    .flow-row strong{display:block;margin-bottom:4px}.flow-meta{font-size:11px;color:var(--muted);display:flex;gap:12px}.health{font-size:11px;font-weight:700;padding:5px 8px;border-radius:20px}.health.ok{color:var(--success);background:#e7f5ef}.health.warn{color:#a85f12;background:#fff2df}
+    .risk-list{padding:7px 18px}.risk{display:flex;gap:12px;padding:13px 0;border-bottom:1px solid #edf1f4}.risk:last-child{border:0}.risk-icon{width:28px;height:28px;border-radius:8px;background:#fff0e5;color:var(--warning);display:grid;place-items:center;flex:0 0 auto}.risk.high .risk-icon{background:#fff0f2;color:var(--danger)}
+    .risk strong{font-size:13px;display:block;margin-bottom:4px}.risk p{font-size:11px;color:var(--muted);margin:0;line-height:1.5}
+    .toolbar{background:var(--surface);border:1px solid var(--line);padding:12px;border-radius:10px;display:flex;gap:9px;align-items:center;margin-bottom:14px;flex-wrap:wrap}
+    .search{position:relative;min-width:250px;flex:1}.search input{width:100%;height:38px;border:1px solid var(--line);border-radius:7px;padding:0 12px 0 34px;background:#fbfcfd}.search:before{content:"⌕";position:absolute;left:12px;top:7px;color:var(--muted);font-size:18px}
+    select,input,textarea{border:1px solid var(--line);border-radius:7px;background:#fff;color:var(--ink);padding:9px 10px}
+    table{width:100%;border-collapse:collapse}th{text-align:left;color:var(--muted);font-size:11px;font-weight:700;background:#f7f9fb;padding:11px 14px;border-bottom:1px solid var(--line)}td{padding:14px;border-bottom:1px solid #edf1f4;vertical-align:middle}tbody tr{transition:.12s}tbody tr:hover{background:#f8fbfc}tbody tr:last-child td{border-bottom:0}
+    .table-name{font-weight:700;font-family:"JetBrains Mono",Consolas,monospace;font-size:12px}.table-desc{font-size:11px;color:var(--muted);margin-top:4px}
+    .tag{display:inline-flex;align-items:center;gap:5px;padding:4px 7px;border-radius:5px;font-size:10px;font-weight:800;letter-spacing:.3px;background:color-mix(in srgb,var(--tag) 12%,white);color:var(--tag)}.tag:before{content:"";width:6px;height:6px;border-radius:2px;background:var(--tag)}
+    .tiny-risk{width:7px;height:7px;border-radius:50%;background:var(--danger);display:inline-block;margin-right:6px}
+    .tabs{display:flex;border-bottom:1px solid var(--line);padding:0 18px;gap:24px}.tab{border:0;background:transparent;padding:14px 0;color:var(--muted);font-weight:650;position:relative}.tab.active{color:var(--accent)}.tab.active:after{content:"";position:absolute;height:2px;background:var(--accent);left:0;right:0;bottom:-1px}
+    .detail-layout{display:grid;grid-template-columns:1fr 330px;gap:16px}.info-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:0}.info-item{padding:16px 18px;border-right:1px solid #edf1f4;border-bottom:1px solid #edf1f4}.info-item:nth-child(3n){border-right:0}.info-item small{display:block;color:var(--muted);font-size:10px;margin-bottom:6px}.info-item strong{font-size:12px}
+    .code{background:#132237;color:#dce8f2;border-radius:9px;padding:16px;line-height:1.8;font-size:11px;overflow:auto}.kw{color:#75c7d5}.fn{color:#e7ad62}.str{color:#83c89f}
+    .lineage-shell{height:680px;display:grid;grid-template-columns:minmax(0,1fr) 340px;overflow:hidden}.graph{position:relative;background-color:#f8fafb;background-image:radial-gradient(#cfd8df 1px,transparent 1px);background-size:20px 20px;overflow:auto}
+    .lane-labels{position:sticky;top:0;height:42px;background:rgba(248,250,251,.93);display:grid;grid-template-columns:repeat(5,1fr);z-index:3;border-bottom:1px solid var(--line);backdrop-filter:blur(5px)}.lane-labels span{text-align:center;padding:13px;color:var(--muted);font-size:10px;font-weight:800;letter-spacing:.8px}
+    .graph-area{position:relative;min-width:920px;min-height:590px;margin:0}.edge{position:absolute;height:2px;background:#9db0bd;transform-origin:left center;z-index:0}.edge:after{content:"";position:absolute;right:-1px;top:-4px;border-left:7px solid #9db0bd;border-top:5px solid transparent;border-bottom:5px solid transparent}.edge.hot{background:var(--accent);height:3px}.edge.hot:after{border-left-color:var(--accent)}.edge.dim{opacity:.12}
+    .node{position:absolute;width:172px;min-height:58px;background:#fff;border:1px solid #cfdae2;border-left:4px solid var(--c);border-radius:9px;padding:10px;box-shadow:0 5px 16px rgba(28,42,60,.08);z-index:2;cursor:pointer;transition:.18s}.node:hover,.node.selected{transform:translateY(-2px);border-color:var(--c);box-shadow:0 8px 20px rgba(28,42,60,.14)}.node.selected{outline:3px solid color-mix(in srgb,var(--c) 15%,transparent)}.node.dim{opacity:.18}
+    .node .layer{font-size:9px;color:var(--c);font-weight:900;letter-spacing:.6px}.node strong{font:700 11px "JetBrains Mono",Consolas,monospace;display:block;margin:6px 0;overflow-wrap:anywhere}.node small{color:var(--muted);font-size:9px}
+    .evidence{border-left:1px solid var(--line);background:#fff;overflow:auto}.evidence-head{padding:18px;border-bottom:1px solid var(--line)}.evidence-body{padding:18px}.evidence-block{margin-bottom:20px}.evidence-block label{font-size:10px;color:var(--muted);display:block;margin-bottom:7px;text-transform:uppercase;letter-spacing:.8px}.evidence-block p{line-height:1.6;margin:0;font-size:12px}
+    .workflow-canvas{padding:30px;overflow:auto}.job-chain{display:flex;align-items:center;min-width:950px}.job{width:155px;border:1px solid var(--line);background:white;border-radius:10px;padding:13px;position:relative}.job .num{font-size:10px;color:var(--accent);font-weight:900}.job strong{font-size:12px;display:block;margin:8px 0}.job small{font-size:9px;color:var(--muted)}.job-line{width:35px;height:1px;background:#9dabb7;position:relative}.job-line:after{content:"";position:absolute;right:0;top:-3px;border-left:6px solid #9dabb7;border-top:3px solid transparent;border-bottom:3px solid transparent}
+    .workflow-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;padding:18px}.workflow-job{border:1px solid var(--line);border-top:4px solid var(--accent);border-radius:10px;padding:15px;background:#fff}.workflow-job strong{display:block;margin:6px 0;overflow-wrap:anywhere}.workflow-deps{font-size:10px;color:var(--muted);line-height:1.6}.workflow-edge-list{border-top:1px solid var(--line);padding:16px 18px}.evidence-list{display:grid;gap:8px;margin-top:10px}.evidence-item{padding:9px 10px;background:#f5f8fa;border:1px solid var(--line);border-radius:7px;font:10px/1.55 "JetBrains Mono",Consolas,monospace;overflow-wrap:anywhere}.detail-empty{padding:46px;text-align:center;color:var(--muted)}.field-table td,.field-table th{padding:10px 12px}.role-chip{font-size:9px;border-radius:4px;background:#edf4f6;color:#176c7a;padding:3px 6px}.relation-list{display:grid;gap:8px;margin-top:10px}.relation-item{border:1px solid var(--line);border-radius:7px;padding:9px 10px;cursor:pointer;font:10px "JetBrains Mono",monospace}.relation-item:hover{border-color:var(--accent)}.diff-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.diff-section{border:1px solid var(--line);border-radius:9px;padding:15px}.diff-section h3{margin-bottom:11px}.diff-line{padding:7px 8px;margin:5px 0;border-radius:5px;font:10px/1.5 "JetBrains Mono",monospace;overflow-wrap:anywhere}.diff-line.add{background:#e7f5ef;color:#176b50}.diff-line.remove{background:#fff0f2;color:#9d2f39}.impact-kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px}.impact-kpi{padding:13px;border:1px solid var(--line);border-radius:8px}.impact-kpi strong{font-size:21px;display:block}.impact-columns{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.empty-guidance{padding:18px;background:#f7f9fb;border:1px solid var(--line);border-radius:8px;color:var(--muted);font-size:11px;line-height:1.65}
+    .branch{margin-left:38px;margin-top:28px;display:flex;gap:26px}.branch .job:before{content:"";position:absolute;left:50%;top:-29px;height:28px;border-left:1px dashed #9dabb7}
+    .metric-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}.metric-card{padding:18px;cursor:pointer;transition:.16s}.metric-card:hover{transform:translateY(-2px);box-shadow:var(--shadow)}.metric-card .formula{font:700 12px "JetBrains Mono",monospace;background:#f1f6f7;color:#176c7a;border-radius:7px;padding:10px;margin:14px 0}.metric-foot{display:flex;justify-content:space-between;color:var(--muted);font-size:10px}
+    .impact-form{padding:20px;display:grid;grid-template-columns:repeat(2,1fr);gap:14px}.field{display:flex;flex-direction:column;gap:7px}.field.full{grid-column:1/-1}.field label{font-size:11px;color:var(--muted);font-weight:700}
+    .impact-summary{display:none;margin-top:16px}.impact-summary.show{display:block;animation:fade .25s}.risk-score{padding:20px;background:#fff8ee;border:1px solid #f0d8b6;border-radius:12px;display:flex;align-items:center;gap:18px}.score-circle{width:64px;height:64px;border-radius:50%;background:conic-gradient(var(--warning) 0 66%,#f2e2ca 66%);display:grid;place-items:center;position:relative}.score-circle:before{content:"";position:absolute;inset:7px;background:#fff8ee;border-radius:50%}.score-circle strong{z-index:1;font-size:18px}.impact-tree{padding:20px}.tree-row{display:flex;align-items:center;gap:8px;padding:7px 0 7px calc(var(--depth)*24px);font-size:12px}.tree-line{width:16px;height:1px;background:#aab6c0}.change{padding:14px 18px;border-bottom:1px solid #edf1f4;display:grid;grid-template-columns:75px 1fr auto;gap:12px}.change-type{font-size:10px;font-weight:800}.change-type.add{color:var(--success)}.change-type.modify{color:var(--warning)}.change-type.delete{color:var(--danger)}
+    .chat{height:650px;display:grid;grid-template-columns:280px 1fr}.chat-side{border-right:1px solid var(--line);padding:16px}.suggestion{border:1px solid var(--line);border-radius:8px;padding:11px;margin-bottom:8px;font-size:11px;line-height:1.5;cursor:pointer}.suggestion:hover{border-color:var(--accent);background:var(--accent-soft)}.chat-main{display:flex;flex-direction:column}.messages{flex:1;padding:24px;overflow:auto}.msg{max-width:760px;margin-bottom:18px}.msg.user{margin-left:auto;background:var(--accent);color:#fff;border-radius:12px 12px 3px 12px;padding:12px 15px}.msg.ai{display:flex;gap:12px}.avatar{width:32px;height:32px;border-radius:8px;background:var(--navy);color:#fff;display:grid;place-items:center;flex:0 0 auto}.bubble{background:#f7f9fb;border:1px solid var(--line);border-radius:3px 12px 12px;padding:15px;line-height:1.7}.evidence-link{display:inline-block;margin:8px 6px 0 0;padding:5px 8px;border-radius:5px;background:#e7f3f5;color:var(--accent);font-size:10px;font-weight:700}.chat-input{border-top:1px solid var(--line);padding:14px;display:flex;gap:8px}.chat-input input{flex:1}
+    .drawer-overlay{position:fixed;inset:0;background:rgba(12,24,38,.25);z-index:40;opacity:0;visibility:hidden;transition:.2s}.drawer-overlay.open{opacity:1;visibility:visible}.drawer{position:absolute;right:0;top:0;bottom:0;width:470px;background:#fff;box-shadow:-16px 0 40px rgba(12,24,38,.15);padding:24px;transform:translateX(100%);transition:.25s;overflow:auto}.drawer-overlay.open .drawer{transform:none}.drawer-close{float:right;border:0;background:#f2f5f7;border-radius:7px;width:32px;height:32px}
+    .toast{position:fixed;right:24px;bottom:24px;background:var(--navy);color:white;border-radius:9px;padding:12px 16px;box-shadow:var(--shadow);z-index:60;transform:translateY(20px);opacity:0;transition:.2s}.toast.show{transform:none;opacity:1}
+    .mode-banner{display:none;padding:10px 30px;background:#fff5e5;border-bottom:1px solid #efd6ac;color:#815315;font-size:12px;align-items:center;justify-content:space-between;gap:16px}.mode-banner.show{display:flex}.mode-banner strong{margin-right:7px}.mode-banner code{font-size:10px;color:#67420d}.mode-banner .btn{padding:6px 10px;background:transparent;border-color:#d6b879;color:#76501b}
+    .connection-pill{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line);border-radius:20px;padding:6px 9px;font-size:10px;font-weight:800;background:#f8fafb}.connection-pill:before{content:"";width:7px;height:7px;border-radius:50%;background:var(--warning)}.connection-pill.live:before{background:var(--success);box-shadow:0 0 0 3px rgba(39,141,102,.13)}.connection-pill.loading:before{background:var(--accent);animation:pulseDot .8s infinite alternate}@keyframes pulseDot{to{opacity:.3}}
+    .project-select{border:0;background:transparent;padding:2px 24px 2px 0;font-weight:750;max-width:280px}.project-select:focus-visible{outline:2px solid var(--accent)}
+    .load-state{padding:34px;text-align:center;color:var(--muted)}.load-state strong{display:block;color:var(--ink);margin-bottom:7px}.load-state.error{color:var(--danger)}.api-note{font-size:10px;color:var(--muted);line-height:1.5;margin-top:10px}.file-input{width:100%;border:1px dashed #aebec9;background:#f8fafb;padding:26px 18px;text-align:center}
+    .drawer-actions{display:flex;gap:8px;margin-top:20px;align-items:center}.drawer-actions .btn:last-child{margin-left:auto}.import-progress{display:none;margin-top:14px;padding:12px;border-radius:8px;background:var(--accent-soft);color:#176c7a;font-size:11px}.import-progress.show{display:block}.import-progress strong,.import-progress span{display:block}.import-progress span{margin-top:4px;line-height:1.55}.import-progress .btn{margin-top:10px;background:#fff}
+    .import-drawer{width:min(760px,96vw);padding:0}.wizard-head{padding:24px 28px 18px;border-bottom:1px solid var(--line);position:sticky;top:0;background:#fff;z-index:3}.wizard-head h2{margin:2px 0 5px}.wizard-head .drawer-close{position:absolute;right:24px;top:24px}.wizard-steps{display:grid;grid-template-columns:repeat(4,1fr);gap:0;margin-top:20px}.wizard-step{position:relative;padding-top:20px;color:var(--muted);font-size:10px;font-weight:750}.wizard-step:before{content:"";position:absolute;left:0;right:0;top:7px;height:2px;background:#dce3e9}.wizard-step:first-child:before{left:12px}.wizard-step:last-child:before{right:calc(100% - 12px)}.wizard-step i{position:absolute;top:0;left:0;width:16px;height:16px;border-radius:50%;background:#fff;border:2px solid #bac6cf;z-index:1}.wizard-step.active{color:var(--accent)}.wizard-step.active i,.wizard-step.done i{border-color:var(--accent);background:var(--accent)}.wizard-step.done i:after{content:"✓";position:absolute;color:white;font-style:normal;font-size:9px;left:2px;top:-1px}.wizard-step strong{display:block;font-size:11px;color:inherit;margin-bottom:2px}.wizard-body{padding:24px 28px 30px}.wizard-panel{display:none}.wizard-panel.active{display:block;animation:fade .16s}.choice-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:18px 0}.choice-card{border:1px solid var(--line);border-radius:10px;padding:15px;cursor:pointer;background:#fff}.choice-card:has(input:checked){border-color:var(--accent);box-shadow:0 0 0 3px rgba(20,124,145,.1)}.choice-card input{margin-right:7px}.choice-card strong{font-size:12px}.choice-card p{margin:7px 0 0 23px;color:var(--muted);font-size:10px;line-height:1.5}.package-tabs{display:flex;gap:6px;margin:18px 0 10px}.package-tab{padding:7px 11px}.package-tab.active{background:var(--navy);border-color:var(--navy);color:#fff}.package-tree{background:#132237;color:#d8e5ef;border-radius:10px;padding:16px 18px;font:11px/1.8 "JetBrains Mono",Consolas,monospace;white-space:pre;overflow:auto;min-height:235px}.req{color:#7dd5df}.recommend{color:#f1bc73}.optional{color:#8fa4b8}.legend{display:flex;gap:14px;margin-top:10px;font-size:10px;color:var(--muted)}.legend b{width:7px;height:7px;border-radius:2px;display:inline-block;margin-right:5px}.download-row{display:flex;gap:8px;margin-top:18px;flex-wrap:wrap}.upload-zone{display:block;border:1.5px dashed #9eafb9;background:#f8fafb;border-radius:12px;padding:28px;text-align:center;cursor:pointer}.upload-zone:hover{border-color:var(--accent);background:#f3fafb}.upload-zone input{position:absolute;opacity:0;pointer-events:none}.upload-zone strong{display:block;margin-bottom:6px}.file-meta{display:none;margin-top:12px;border:1px solid var(--line);border-radius:9px;padding:12px 14px;align-items:center;gap:12px}.file-meta.show{display:flex}.file-meta .file-icon{width:34px;height:38px;background:var(--accent-soft);color:var(--accent);display:grid;place-items:center;border-radius:7px;font-weight:850}.file-meta small{display:block;color:var(--muted);margin-top:3px}.preflight{margin-top:16px}.preflight-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:8px}.check-card{border:1px solid var(--line);border-radius:8px;padding:10px;background:#fff}.check-card strong{font-size:16px;display:block}.check-card span{font-size:9px;color:var(--muted)}.check-card.ok{border-color:#bfe4d5;background:#f4fbf8}.check-card.warn{border-color:#efd7b7;background:#fffaf2}.diagnostic{display:flex;gap:9px;padding:10px 12px;border-radius:8px;margin-top:8px;font-size:10px;line-height:1.5}.diagnostic.error{background:#fff0f2;color:#9d2f39}.diagnostic.warning{background:#fff5e5;color:#885817}.confirm-box{border:1px solid var(--line);border-radius:10px;padding:16px;margin-top:16px}.confirm-row{display:flex;justify-content:space-between;gap:16px;padding:8px 0;border-bottom:1px solid #edf1f4;font-size:11px}.confirm-row:last-child{border:0}.summary-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;margin:18px 0}.summary-item{background:#f5f8fa;border:1px solid var(--line);padding:13px;border-radius:9px}.summary-item strong{display:block;font-size:20px}.summary-item span{font-size:10px;color:var(--muted)}.wizard-mode{display:inline-flex;margin-top:11px;padding:5px 8px;border-radius:20px;background:#eef3f6;color:var(--muted);font-size:9px;font-weight:800}.wizard-mode.live{background:#e7f5ef;color:var(--success)}.wizard-help{font-size:10px;color:var(--muted);line-height:1.65}.wizard-error{color:var(--danger);font-size:11px;margin-top:8px}.btn[disabled]{cursor:not-allowed;opacity:.5}
+    .mobile-menu{display:none}
+    .workspace-state{display:none;min-height:calc(100vh - 156px);place-items:center;padding:34px 0}.content.state-welcome .workspace-state,.content.state-project-empty .workspace-state,.content.state-loading .workspace-state,.content.state-error .workspace-state{display:grid}.content.state-welcome .pipeline,.content.state-welcome .page,.content.state-project-empty .pipeline,.content.state-project-empty .page,.content.state-loading .pipeline,.content.state-loading .page,.content.state-error .pipeline,.content.state-error .page{display:none!important}
+    .empty-console{width:min(880px,100%);display:grid;grid-template-columns:minmax(260px,.85fr) minmax(340px,1.15fr);background:var(--surface);border:1px solid var(--line);border-radius:16px;overflow:hidden;box-shadow:var(--shadow)}.empty-copy{padding:42px}.empty-copy h1{font-size:30px;max-width:490px}.empty-copy .subtle{max-width:500px}.empty-actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:24px}.empty-kicker{display:inline-flex;align-items:center;gap:8px;font-size:10px;font-weight:850;letter-spacing:1px;color:var(--accent);text-transform:uppercase;margin-bottom:16px}.empty-kicker:before{content:"";width:24px;height:2px;background:var(--accent)}
+    .empty-blueprint{background:#132237;color:#dce8f2;padding:34px;position:relative;overflow:hidden;background-image:radial-gradient(rgba(158,183,201,.18) 1px,transparent 1px);background-size:18px 18px}.blueprint-title{font:700 10px "JetBrains Mono",Consolas,monospace;color:#8fa9be;letter-spacing:1px;margin-bottom:24px}.blueprint-flow{display:grid;gap:11px;position:relative}.blueprint-flow:before{content:"";position:absolute;left:18px;top:20px;bottom:20px;border-left:1px dashed #55718c}.blueprint-node{display:grid;grid-template-columns:38px 1fr;gap:12px;align-items:center;position:relative}.blueprint-node i{width:38px;height:38px;border-radius:9px;background:#1d334d;border:1px solid #35526f;display:grid;place-items:center;font-style:normal;font-size:9px;font-weight:900;color:#79c4d1;z-index:1}.blueprint-node strong{display:block;font-size:11px}.blueprint-node small{color:#8fa4b8;font-size:9px}.analysis-state{display:inline-flex;gap:7px;align-items:center;font-size:10px;font-weight:800;padding:6px 9px;border-radius:20px;background:#eef3f6;color:var(--muted)}.analysis-state:before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}.analysis-state.completed{background:#e7f5ef;color:var(--success)}.analysis-state.processing{background:#e7f3f5;color:var(--accent)}.analysis-state.failed{background:#fff0f2;color:var(--danger)}
+    .project-drawer{width:min(560px,96vw)}.project-summary{padding:16px;border-radius:10px;background:#f5f8fa;border:1px solid var(--line);margin:18px 0}.project-summary h3{margin-bottom:6px}.project-summary-row{display:flex;justify-content:space-between;gap:14px;padding:9px 0;border-bottom:1px solid var(--line);font-size:11px}.project-summary-row:last-child{border:0}.history-list{display:grid;gap:9px;margin-top:12px}.history-item{border:1px solid var(--line);border-radius:9px;padding:13px;display:grid;grid-template-columns:1fr auto;gap:12px}.history-item small{display:block;color:var(--muted);margin-top:5px}.history-item .analysis-state{align-self:start}.history-error-action{margin-top:9px;padding:0;border:0;background:transparent;color:var(--danger);font-size:10px;font-weight:800;text-decoration:underline;text-underline-offset:3px}.history-error-action:hover{color:#8f2832}.danger-zone{margin-top:26px;padding-top:20px;border-top:1px solid var(--line)}.empty-inline{padding:28px;text-align:center;border:1px dashed var(--line);border-radius:9px;color:var(--muted)}.project-menu-btn[disabled]{display:none}
+    .diagnostic-overlay{position:fixed;inset:0;z-index:80;background:rgba(12,24,38,.52);display:none;place-items:center;padding:22px}.diagnostic-overlay.open{display:grid}.diagnostic-dialog{width:min(680px,100%);max-height:min(760px,calc(100vh - 44px));overflow:auto;background:#fff;border-radius:14px;box-shadow:0 28px 80px rgba(12,24,38,.3)}.diagnostic-head{position:sticky;top:0;z-index:2;background:#fff;padding:22px 24px 17px;border-bottom:1px solid var(--line)}.diagnostic-head .drawer-close{position:absolute;right:22px;top:20px}.diagnostic-head h2{margin-right:42px}.diagnostic-body{padding:22px 24px 24px}.diagnostic-lead{border-left:4px solid var(--danger);background:#fff5f6;border-radius:0 9px 9px 0;padding:14px 16px;margin-bottom:18px}.diagnostic-lead strong{display:block;color:#942f38;margin-bottom:5px}.diagnostic-lead p{margin:0;color:#6e3b41;line-height:1.6}.diagnostic-grid{display:grid;grid-template-columns:1fr 1fr;border:1px solid var(--line);border-radius:10px;overflow:hidden}.diagnostic-field{padding:12px 14px;min-width:0;border-bottom:1px solid var(--line)}.diagnostic-field:nth-child(odd){border-right:1px solid var(--line)}.diagnostic-field:nth-last-child(-n+2){border-bottom:0}.diagnostic-field span{display:block;font-size:9px;color:var(--muted);margin-bottom:5px}.diagnostic-field strong{font-size:11px;overflow-wrap:anywhere}.diagnostic-section{margin-top:18px}.diagnostic-section h3{margin-bottom:8px}.diagnostic-copy{background:#132237;color:#d7e5ee;border-radius:9px;padding:13px 15px;font:10px/1.7 "JetBrains Mono",Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.diagnostic-safety{display:flex;gap:9px;padding:11px 13px;border-radius:8px;background:#f2f7f8;color:#45616b;font-size:10px;line-height:1.5}.diagnostic-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:20px}
+    @media(max-width:1050px){.grid.cols-4{grid-template-columns:repeat(2,1fr)}.grid.two,.detail-layout{grid-template-columns:1fr}.metric-grid{grid-template-columns:repeat(2,1fr)}.lineage-shell{grid-template-columns:1fr}.evidence{display:none}}
+    @media(max-width:760px){.app{grid-template-columns:1fr}.sidebar{transform:translateX(-100%);transition:.2s}.sidebar.open{transform:none}.main{grid-column:1}.mobile-menu{display:grid}.topbar{padding:0 12px}.top-actions .connection-pill,.top-actions [data-goto="assistant"],.project-menu-btn{display:none}.content{padding:20px 14px}.mode-banner{padding:10px 14px;align-items:flex-start}.grid.cols-4,.grid.cols-3,.metric-grid{grid-template-columns:1fr}.page-head{flex-direction:column}.head-actions{width:100%;flex-wrap:wrap}.pipeline{border-radius:10px}.table-card{overflow:auto}.detail-layout{display:block}.info-grid{grid-template-columns:1fr}.info-item{border-right:0}.chat{grid-template-columns:1fr}.chat-side{display:none}.impact-form{grid-template-columns:1fr}.field.full{grid-column:1}.drawer{width:min(92vw,470px)}.import-drawer{width:100vw}.wizard-head,.wizard-body{padding-left:18px;padding-right:18px}.wizard-step span{display:none}.choice-grid{grid-template-columns:1fr}.preflight-grid{grid-template-columns:repeat(2,1fr)}.summary-grid{grid-template-columns:repeat(2,1fr)}.drawer-actions{position:sticky;bottom:0;background:#fff;padding:12px 0 4px}.wizard-steps{margin-right:44px}.empty-console{grid-template-columns:1fr}.empty-copy{padding:28px}.empty-blueprint{padding:26px}.empty-copy h1{font-size:25px}.diagnostic-overlay{padding:0;place-items:end center}.diagnostic-dialog{width:100%;max-height:92vh;border-radius:14px 14px 0 0}.diagnostic-head,.diagnostic-body{padding-left:18px;padding-right:18px}.diagnostic-grid{grid-template-columns:1fr}.diagnostic-field,.diagnostic-field:nth-child(odd){border-right:0;border-bottom:1px solid var(--line)}.diagnostic-field:last-child{border-bottom:0}.diagnostic-actions{position:sticky;bottom:0;background:#fff;padding-top:12px}.diagnostic-actions .btn{flex:1}}
+    @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important}}
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand"><div class="brand-mark"></div><div><strong>DataFlow Inspector</strong><small>数据加工链路分析台</small></div></div>
+      <nav class="nav" aria-label="主导航">
+        <div class="nav-label">工作台</div>
+        <button class="active" data-page="overview"><span class="ico">⌂</span>项目总览</button>
+        <button data-page="assets"><span class="ico">▦</span>数据资产</button>
+        <button data-page="lineage"><span class="ico">⌘</span>血缘分析</button>
+        <button data-page="workflow"><span class="ico">⌁</span>作业流</button>
+        <button data-page="metrics"><span class="ico">◫</span>指标口径</button>
+        <div class="nav-label">变更与诊断</div>
+        <button data-page="impact"><span class="ico">⌬</span>变更影响</button>
+        <button data-page="compare"><span class="ico">⇄</span>版本比较</button>
+        <button data-page="assistant"><span class="ico">✦</span>数据助手</button>
+      </nav>
+      <div class="side-foot"><div class="status"><span class="dot" id="sideDot"></span><span id="sideVersion">正在连接分析服务…</span></div><div id="sideStats" style="font-size:10px;color:#7890a8;margin-top:8px">读取项目元数据</div></div>
+    </aside>
+    <main class="main">
+      <header class="topbar">
+        <div class="project-switch"><button class="btn icon-btn mobile-menu" id="menuBtn" aria-label="打开导航">☰</button><div><small>当前项目</small><br><select id="projectSelect" class="project-select" aria-label="切换项目"><option>正在加载项目…</option></select></div></div>
+        <div class="top-actions"><span class="connection-pill loading" id="connectionPill">连接中</span><button class="btn icon-btn" id="refreshBtn" title="刷新后端数据" aria-label="刷新后端数据">↻</button><button class="btn project-menu-btn" id="projectMenuBtn" disabled>项目管理</button><button class="btn" id="importBtn">＋ 创建项目</button><button class="btn primary" data-goto="assistant">✦ 问数据助手</button></div>
+      </header>
+      <div class="mode-banner" id="modeBanner"><div><strong id="modeBannerTitle">连接失败</strong><span id="modeBannerText">无法读取分析服务。</span> <code id="apiEndpoint"></code></div><div style="display:flex;gap:8px"><button class="btn" id="retryConnection">重新连接</button></div></div>
+      <div class="content">
+        <section class="workspace-state" id="workspaceState" aria-live="polite">
+          <div class="empty-console">
+            <div class="empty-copy">
+              <div class="empty-kicker" id="emptyKicker">开始建立数据地图</div>
+              <h1 id="emptyTitle">还没有分析项目</h1>
+              <p class="subtle" id="emptyMessage">导入脱敏后的 DDL、加工 SQL 和作业清单，生成表、字段、血缘、指标与风险视图。</p>
+              <div class="empty-actions">
+                <button class="btn primary" id="emptyCreateBtn">＋ 创建第一个项目</button>
+                <button class="btn" id="emptyRetryBtn" hidden>重新连接</button>
+              </div>
+              <p class="wizard-help" id="emptyFoot">你的资料只会发送到当前配置的内网分析服务。</p>
+            </div>
+            <div class="empty-blueprint" aria-hidden="true">
+              <div class="blueprint-title">WAREHOUSE LINEAGE / WAITING FOR INPUT</div>
+              <div class="blueprint-flow">
+                <div class="blueprint-node"><i>01</i><div><strong>RDS / CDM</strong><small>业务源与搬运任务</small></div></div>
+                <div class="blueprint-node"><i>02</i><div><strong>ODS → DWD</strong><small>清洗、去重与维度补充</small></div></div>
+                <div class="blueprint-node"><i>03</i><div><strong>DWS</strong><small>分钟、小时与主题聚合</small></div></div>
+                <div class="blueprint-node"><i>04</i><div><strong>ADS</strong><small>报表消费与影响边界</small></div></div>
+              </div>
+            </div>
+          </div>
+        </section>
+        <div class="pipeline" aria-label="数据加工层级">
+          <div class="pipe-stage"><div class="pipe-node" style="--c:var(--source)" data-layer="SOURCE"><i></i>RDS / CDM <small>0</small></div><span class="pipe-line pulse"></span></div>
+          <div class="pipe-stage"><div class="pipe-node" style="--c:var(--ods)" data-layer="ODS"><i></i>ODS <small>0</small></div><span class="pipe-line pulse"></span></div>
+          <div class="pipe-stage"><div class="pipe-node" style="--c:var(--dwd)" data-layer="DWD"><i></i>DWD <small>0</small></div><span class="pipe-line pulse"></span></div>
+          <div class="pipe-stage"><div class="pipe-node" style="--c:var(--dws)" data-layer="DWS"><i></i>DWS 分钟 / 小时 <small>0</small></div><span class="pipe-line pulse"></span></div>
+          <div class="pipe-stage"><div class="pipe-node" style="--c:var(--ads)" data-layer="ADS"><i></i>ADS 报表 <small>0</small></div></div>
+        </div>
+
+        <section class="page active" id="page-overview">
+          <div class="page-head"><div><div class="eyebrow">Project pulse</div><h1>项目分析总览</h1><div class="subtle">等待加载最新完成版本的真实分析结果。</div></div><div class="head-actions"><button class="btn" data-goto="compare">比较版本</button><button class="btn primary" data-goto="lineage">打开完整血缘</button></div></div>
+          <div class="grid cols-4">
+            <div class="card stat" style="--tint:#e8f1fb"><div class="label">数据资产</div><div class="value">0</div><div class="delta">等待分析结果</div></div>
+            <div class="card stat" style="--tint:#efeafd"><div class="label">字段总数</div><div class="value">0</div><div class="delta">等待分析结果</div></div>
+            <div class="card stat" style="--tint:#fff0df"><div class="label">指标口径</div><div class="value">0</div><div class="delta">等待分析结果</div></div>
+            <div class="card stat" style="--tint:#ffe7e9"><div class="label">待处理风险</div><div class="value" style="color:var(--danger)">0</div><div class="delta">等待分析结果</div></div>
+          </div>
+          <div class="grid two" style="margin-top:16px">
+            <div class="card"><div class="section-head"><h2>作业流概览</h2><a data-goto="workflow">查看作业拓扑 →</a></div><div class="flow-list"><div class="load-state"><strong>正在读取作业流</strong>内容来自当前项目的最新完成版本。</div></div></div>
+            <div class="card"><div class="section-head"><h2>需要关注</h2><a data-goto="impact">进入诊断 →</a></div><div class="risk-list"><div class="load-state"><strong>正在读取分析风险</strong>系统不会使用预置结果填充。</div></div></div>
+          </div>
+        </section>
+
+        <section class="page" id="page-assets">
+          <div class="page-head"><div><div class="eyebrow">Data catalog</div><h1>数据资产</h1><div class="subtle">查看表、字段、时间语义以及它们在加工链路中的位置。</div></div><div class="head-actions"><button class="btn" id="exportFields">导出字段字典</button></div></div>
+          <div class="toolbar"><div class="search"><input id="assetSearch" placeholder="搜索表名、字段或中文描述" /></div><select id="layerFilter"><option value="">全部层级</option><option>ODS</option><option>DWD</option><option>DWS</option><option>ADS</option><option>DIM</option></select><label style="font-size:11px;color:var(--muted)"><input id="riskOnly" type="checkbox" /> 仅看有风险</label></div>
+          <div class="card table-card"><table><thead><tr><th>表</th><th>层级</th><th>数据粒度</th><th>核心时间字段</th><th>字段数</th><th>上下游</th><th>状态</th></tr></thead><tbody id="assetRows"></tbody></table></div>
+        </section>
+
+        <section class="page" id="page-detail">
+          <div class="page-head"><div><div class="eyebrow">Table detail</div><h1>资产详情</h1><div class="subtle">从数据资产列表选择一张表，查看真实字段和加工证据。</div></div><div class="head-actions"><button class="btn" data-goto="assets">返回资产</button><button class="btn" id="detailLineage">查看该表血缘</button></div></div>
+          <div id="assetDetail"><div class="card detail-empty"><strong>尚未选择数据资产</strong><p>请从数据资产列表选择一张表。</p></div></div>
+        </section>
+
+        <section class="page" id="page-lineage">
+          <div class="page-head"><div><div class="eyebrow">Lineage explorer</div><h1>血缘分析</h1><div class="subtle">从来源、转换表达式到最终报表，逐层验证每一条加工关系。</div></div></div>
+          <div class="toolbar"><select id="lineageMode"><option value="table">表级血缘</option><option value="column">字段级血缘</option></select><select id="lineageDepth"><option value="3">上下游 3 层</option><option value="5">上下游 5 层</option><option value="1">仅直接关系</option><option value="all">完整链路</option></select><div class="search"><input id="lineageSearch" placeholder="定位表或字段" /></div><button class="btn" id="highlightPath">聚焦选中链路</button></div>
+          <div class="card lineage-shell"><div class="graph"><div class="lane-labels"><span>RDS / CDM</span><span>ODS</span><span>DWD / DIM</span><span>DWS</span><span>ADS</span></div><div class="graph-area" id="graphArea"></div></div><aside class="evidence"><div class="evidence-head"><div class="eyebrow">Selected evidence</div><h3 id="evidenceTitle">尚未选择节点</h3></div><div class="evidence-body"><div class="evidence-block"><label>关系与证据</label><div id="evidenceDesc"><p>点击真实血缘节点后显示上下游和 SQL 证据。</p></div></div><button class="btn primary" id="openSelectedAsset" style="width:100%" disabled>打开数据资产</button></div></aside></div>
+        </section>
+
+        <section class="page" id="page-workflow">
+          <div class="page-head"><div><div class="eyebrow">Workflow reconstruction</div><h1>作业流</h1><div class="subtle">根据 jobs.csv 重建加工顺序，并区分已确认与自动推断依赖。</div></div><div class="head-actions"><button class="btn" id="confirmDependencies" disabled title="当前版本只读；后端尚未提供依赖确认写入接口">确认全部可靠依赖</button></div></div>
+          <div class="card" id="workflowResult"><div class="load-state"><strong>正在读取真实作业流</strong>作业顺序和依赖关系来自当前项目分析。</div></div>
+        </section>
+
+        <section class="page" id="page-metrics">
+          <div class="page-head"><div><div class="eyebrow">Metric registry</div><h1>指标口径</h1><div class="subtle">技术公式、统计粒度、时间口径和最终消费位置统一管理。</div></div><div class="head-actions"><button class="btn" id="exportMetrics">导出指标字典</button></div></div>
+          <div class="toolbar"><div class="search"><input id="metricSearch" placeholder="搜索指标名称或字段" /></div><select disabled title="当前版本暂不支持按时间粒度筛选"><option>全部时间粒度</option></select><select disabled title="指标确认写入能力将在后续版本开放"><option>解析识别结果</option></select></div>
+          <div class="metric-grid" id="metricGrid"></div>
+        </section>
+
+        <section class="page" id="page-impact">
+          <div class="page-head"><div><div class="eyebrow">Change intelligence</div><h1>变更影响分析</h1><div class="subtle">提交一个拟议变更，查看结构、语义和历史回刷影响。不会执行生产变更。</div></div></div>
+          <div class="grid two"><div class="card"><div class="section-head"><h2>定义变更</h2><span class="health ok">只读分析</span></div><div class="impact-form"><div class="field full"><label>输入方式</label><select id="quickCase"><option value="">手动填写真实对象</option></select></div><div class="field full"><label>变更对象</label><input id="changeObject" class="mono" placeholder="例如：schema.table.column" /></div><div class="field"><label>变更类型</label><select id="changeType"><option value="type_change">字段类型变化</option><option value="add_column">新增字段</option><option value="filter_change">加工逻辑变化</option><option value="delete_column">删除字段</option><option value="rename_column">重命名字段</option></select></div><div class="field"><label>分析范围</label><select disabled title="当前后端固定分析完整下游"><option>完整下游链路</option></select></div><div class="field"><label>修改前</label><input id="beforeValue" class="mono" placeholder="填写修改前定义" /></div><div class="field"><label>修改后</label><input id="afterValue" class="mono" placeholder="填写修改后定义" /></div><div class="field full"><button class="btn primary" id="runImpact">开始分析影响</button></div></div></div>
+            <div class="card card-pad"><h3>分析范围</h3><p class="subtle">系统从变更对象所属表出发，沿表级血缘遍历全部下游，并列出关联 SQL、指标、ADS 表和风险证据。</p><div class="risk"><div class="risk-icon">i</div><div><strong>静态分析边界</strong><p>字段级传递影响、未导入的 BI、Shell 和动态 SQL 消费方可能无法完整识别，结果中会保留静态分析提示。</p></div></div></div></div>
+          <div class="impact-summary" id="impactResult"><div class="card card-pad"><div class="load-state"><strong>尚未执行影响分析</strong>提交变更后显示后端返回的真实结果。</div></div></div>
+        </section>
+
+        <section class="page" id="page-compare">
+          <div class="page-head"><div><div class="eyebrow">Semantic diff</div><h1>版本比较</h1><div class="subtle">忽略格式噪声，定位 DDL、血缘和指标口径的真实变化。</div></div></div>
+          <div class="toolbar"><select id="compareLeft"><option value="">尚无分析版本</option></select><span>→</span><select id="compareRight"><option value="">尚无分析版本</option></select><button class="btn primary" id="runCompare">开始比较</button></div>
+          <div class="card card-pad" id="compareResult" style="margin-top:16px"><div class="load-state"><strong>尚未执行版本比较</strong>选择两个真实分析版本后开始比较。</div></div>
+        </section>
+
+        <section class="page" id="page-assistant">
+          <div class="page-head"><div><div class="eyebrow">Evidence-grounded assistant</div><h1>数据助手</h1><div class="subtle">基于已解析的表、字段、SQL 和血缘回答，并给出可追溯证据。</div></div></div>
+          <div class="card chat"><aside class="chat-side"><h3 style="margin-bottom:14px">建议提问</h3><div class="suggestion">这个项目有哪些核心时间字段？</div><div class="suggestion">哪些表存在下游依赖？</div><div class="suggestion">有哪些待确认的指标口径？</div><div class="suggestion">当前分析发现了哪些风险？</div></aside><div class="chat-main"><div class="messages" id="messages"><div class="msg ai"><div class="avatar">✦</div><div class="bubble">选择真实项目后，可以询问字段来源、指标口径、时间关系和变更影响。</div></div></div><div class="chat-input"><input id="chatInput" placeholder="询问字段来源、指标口径或变更影响…" /><button class="btn primary" id="sendChat">发送</button></div></div></div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <div class="drawer-overlay" id="projectDrawer" role="dialog" aria-modal="true" aria-labelledby="projectDrawerTitle"><div class="drawer project-drawer">
+    <button class="drawer-close" id="projectDrawerClose" aria-label="关闭项目管理">×</button>
+    <div class="eyebrow">Project operations</div>
+    <h2 id="projectDrawerTitle">项目管理</h2>
+    <p class="subtle">查看分析状态、导入历史，或使用原资料重新生成分析结果。</p>
+    <div class="project-summary">
+      <h3 id="managedProjectName">—</h3>
+      <div class="project-summary-row"><span>连接状态</span><strong id="managedConnection">真实内网服务</strong></div>
+      <div class="project-summary-row"><span>最新分析</span><span class="analysis-state" id="managedStatus">尚未分析</span></div>
+      <div class="project-summary-row"><span>分析版本</span><strong id="managedVersion">0</strong></div>
+    </div>
+    <div class="section-head" style="padding-left:0;padding-right:0"><h3>导入历史</h3><button class="btn" id="manageImportBtn">＋ 导入新版本</button></div>
+    <div class="history-list" id="historyList"><div class="load-state">正在读取导入历史…</div></div>
+    <div class="drawer-actions">
+      <button class="btn primary" id="reanalyzeBtn">重新分析最新版本</button>
+      <button class="btn" id="refreshHistoryBtn">刷新历史</button>
+    </div>
+    <div class="danger-zone"><h3>删除项目</h3><p class="subtle">删除后会同时移除所有导入版本和分析结果，此操作不能撤销。</p><button class="btn danger" id="deleteProjectBtn">删除当前项目</button></div>
+  </div></div>
+
+  <div class="drawer-overlay" id="drawer" role="dialog" aria-modal="true" aria-labelledby="wizardTitle"><div class="drawer import-drawer">
+    <div class="wizard-head"><button class="drawer-close" aria-label="关闭导入向导">×</button><div class="eyebrow">Import readiness</div><h2 id="wizardTitle">导入项目资料</h2><div class="wizard-mode" id="wizardMode">正在确认连接模式</div>
+      <div class="wizard-steps" aria-label="导入进度">
+        <div class="wizard-step active" data-wstep="1"><i></i><strong>项目</strong><span>选择归属</span></div>
+        <div class="wizard-step" data-wstep="2"><i></i><strong>准备</strong><span>了解目录</span></div>
+        <div class="wizard-step" data-wstep="3"><i></i><strong>检查</strong><span>上传前预检</span></div>
+        <div class="wizard-step" data-wstep="4"><i></i><strong>分析</strong><span>确认并完成</span></div>
+      </div>
+    </div>
+    <div class="wizard-body">
+      <section class="wizard-panel active" data-wpanel="1">
+        <h3>这批资料属于哪个项目？</h3><p class="subtle">相关作业流如果会互相引用表，建议放进同一个项目，跨链路血缘才能自动连接。</p>
+        <div class="choice-grid">
+          <label class="choice-card"><input type="radio" name="projectMode" value="existing" checked><strong>加入现有项目</strong><p>作为当前项目的一个新分析版本。</p></label>
+          <label class="choice-card"><input type="radio" name="projectMode" value="new"><strong>创建新项目</strong><p>适合独立业务域或第一批资料。</p></label>
+        </div>
+        <div class="field" id="existingProjectField"><label for="wizardProjectSelect">选择项目</label><select id="wizardProjectSelect"><option value="">正在读取项目…</option></select></div>
+        <div class="field" id="newProjectField" hidden><label for="importProjectName">项目名称</label><input id="importProjectName" placeholder="例如：经营分析数仓" autocomplete="off"></div>
+        <div class="field" style="margin-top:12px"><label for="importVersionNote">版本说明（可选）</label><input id="importVersionNote" placeholder="例如：增加 source_type 维度"></div>
+      </section>
+      <section class="wizard-panel" data-wpanel="2">
+        <h3>按这个结构准备项目包</h3><p class="subtle">DDL 与加工 SQL 是核心输入；作业清单和少量脱敏样例会提高顺序与字段语义判断的准确度。</p>
+        <div class="package-tabs"><button class="btn package-tab active" data-package="minimum">最小可用</button><button class="btn package-tab" data-package="recommended">推荐完整</button></div>
+        <div class="package-tree" id="packageTree" aria-live="polite"></div>
+        <div class="legend"><span><b style="background:#7dd5df"></b>必需</span><span><b style="background:#f1bc73"></b>推荐</span><span><b style="background:#8fa4b8"></b>可选</span></div>
+        <div class="download-row"><button class="btn" id="downloadBlankTemplate">↓ 下载空白模板</button></div>
+        <p class="wizard-help">不要上传全量生产数据、数据库账号、密钥或调度平台密码。样例数据建议每表 20～100 行并提前脱敏。</p>
+      </section>
+      <section class="wizard-panel" data-wpanel="3">
+        <h3>选择 ZIP 并执行上传前检查</h3><p class="subtle">预检只检查包结构和可识别内容，不创建分析版本。只有后端真实返回的结果才会标记为通过。</p>
+        <label class="upload-zone" for="importFile"><input id="importFile" type="file" accept=".zip"><strong>点击选择 ZIP 项目包</strong><span class="subtle">仅接受 .zip；建议包含 ddl/ 与 sql/</span></label>
+        <div class="file-meta" id="fileMeta"><div class="file-icon">ZIP</div><div><strong id="fileName">—</strong><small id="fileSize">—</small></div><button class="btn" id="replaceFile" style="margin-left:auto">重新选择</button></div>
+        <div class="preflight" id="preflightArea"><div class="load-state"><strong>尚未执行预检</strong>选择文件后，点击“检查项目包”。</div></div>
+      </section>
+      <section class="wizard-panel" data-wpanel="4">
+        <div id="importConfirm">
+          <h3>确认上传并开始分析</h3><p class="subtle">系统将保存一个新版本，解析 DDL、SQL、字段血缘、指标和作业依赖。分析过程不会执行上传的 SQL。</p>
+          <div class="confirm-box"><div class="confirm-row"><span>目标项目</span><strong id="confirmProject">—</strong></div><div class="confirm-row"><span>项目包</span><strong id="confirmFile">—</strong></div><div class="confirm-row"><span>预检状态</span><strong id="confirmPreflight">—</strong></div><div class="confirm-row"><span>版本说明</span><strong id="confirmNote">—</strong></div></div>
+        </div>
+        <div id="importComplete" hidden><div class="eyebrow">Analysis complete</div><h3>项目版本已完成分析</h3><p class="subtle" id="completeText">后端已返回本次分析摘要。</p><div class="summary-grid" id="importSummary"></div><div class="download-row"><button class="btn primary" id="gotoAssets">进入数据资产</button><button class="btn" id="gotoLineage">查看血缘图</button></div></div>
+        <div class="import-progress" id="importProgress" role="status" aria-live="polite"></div>
+      </section>
+      <div class="drawer-actions"><button class="btn" id="wizardBack">上一步</button><button class="btn" id="wizardCancel">取消</button><button class="btn primary" id="wizardNext">下一步</button></div>
+    </div>
+  </div></div>
+  <div class="diagnostic-overlay" id="diagnosticDialog" role="dialog" aria-modal="true" aria-labelledby="diagnosticTitle" aria-describedby="diagnosticMessage">
+    <div class="diagnostic-dialog">
+      <div class="diagnostic-head">
+        <button class="drawer-close" id="diagnosticClose" aria-label="关闭错误详情">×</button>
+        <div class="eyebrow">Import diagnostic</div>
+        <h2 id="diagnosticTitle">导入错误详情</h2>
+      </div>
+      <div class="diagnostic-body">
+        <div class="diagnostic-lead"><strong>分析未完成</strong><p id="diagnosticMessage">正在读取错误原因。</p></div>
+        <div class="diagnostic-grid">
+          <div class="diagnostic-field"><span>失败阶段</span><strong id="diagnosticStage">—</strong></div>
+          <div class="diagnostic-field"><span>错误码</span><strong class="mono" id="diagnosticCode">—</strong></div>
+          <div class="diagnostic-field"><span>错误编号</span><strong class="mono" id="diagnosticId">—</strong></div>
+          <div class="diagnostic-field"><span>关联文件</span><strong class="mono" id="diagnosticFile">未定位到具体文件</strong></div>
+        </div>
+        <section class="diagnostic-section"><h3>建议处理</h3><div class="diagnostic-safety"><span>→</span><span id="diagnosticSuggestion">根据提示修正资料后重新导入。</span></div></section>
+        <section class="diagnostic-section"><h3>诊断信息</h3><div class="diagnostic-copy" id="diagnosticCopyText">—</div></section>
+        <section class="diagnostic-section"><h3>本机日志</h3><div class="diagnostic-safety"><span>ⓘ</span><span><span id="diagnosticLogPath">日志位置未返回</span><br>页面仅展示可安全共享的信息，服务器路径、密钥和完整堆栈不会直接暴露。</span></div></section>
+        <div class="diagnostic-actions"><button class="btn" id="copyDiagnostic">复制诊断信息</button><button class="btn primary" id="diagnosticDone">关闭</button></div>
+      </div>
+    </div>
+  </div>
+  <div class="toast" id="toast">操作已完成</div>
+
+  <script>
+    let tables = [], selectedAsset = null;
+    const esc=value=>String(value==null?'':value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    const layerColor = {SOURCE:'var(--source)',RDS:'var(--source)',OTHER:'#55718c',ODS:'var(--ods)',DWD:'var(--dwd)',DWS:'var(--dws)',ADS:'var(--ads)',DIM:'#55718c'};
+    function renderAssets(){
+      const q=document.getElementById('assetSearch').value.toLowerCase(), layer=document.getElementById('layerFilter').value, risk=document.getElementById('riskOnly').checked;
+      const rows=tables.filter(t=>(!q||(t.name+' '+(t.desc||'')+' '+(t.columns||[]).map(c=>c.name).join(' ')).toLowerCase().includes(q))&&(!layer||t.layer===layer)&&(!risk||t.risk)).map(t=>`<tr data-table="${esc(t.name)}" tabindex="0"><td><div class="table-name">${esc(t.name)}</div><div class="table-desc">${esc(t.desc||'')}</div></td><td><span class="tag" style="--tag:${layerColor[t.layer]||'#55718c'}">${esc(t.layer)}</span></td><td>${esc(t.grain||'待识别')}</td><td class="mono">${esc(t.time||'—')}</td><td>${t.fields||0}</td><td>${esc(t.relation||'0 / 0')}</td><td>${t.risk?'<span class="tiny-risk"></span>待检查':'<span style="color:var(--success)">正常</span>'}</td></tr>`).join('');
+      document.getElementById('assetRows').innerHTML=rows||'<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:34px">没有符合条件的数据资产，请调整筛选条件。</td></tr>';
+      document.querySelectorAll('#assetRows tr[data-table]').forEach(r=>{r.onclick=()=>selectAsset(r.dataset.table);r.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();r.click()}}});
+    }
+    function relationList(items,direction){
+      return items.length?`<div class="relation-list">${items.map(x=>`<div class="relation-item" data-related="${esc(x)}">${direction} ${esc(x)}</div>`).join('')}</div>`:'<p class="subtle">无已识别关系</p>';
+    }
+    function renderAssetDetail(){
+      const host=document.getElementById('assetDetail'),t=tables.find(x=>x.name===selectedAsset);
+      if(!t){host.innerHTML='<div class="card detail-empty"><strong>尚未选择数据资产</strong><p>请从数据资产列表选择一张表。</p></div>';return}
+      const cols=t.columns||[],ev=t.evidence||[];
+      host.innerHTML=`<div class="card"><div class="section-head"><div><div class="eyebrow">${esc(t.layer)} table</div><h2 class="mono">${esc(t.name)}</h2><p class="subtle">${esc(t.desc||'未提供表注释')}</p></div><span class="health ${t.inferred?'warn':'ok'}">${t.inferred?'SQL 推断':'DDL 已定义'}</span></div><div class="info-grid"><div class="info-item"><small>数据粒度</small><strong>${esc(t.grain||'待识别')}</strong></div><div class="info-item"><small>核心时间字段</small><strong class="mono">${esc(t.time||'未识别')}</strong></div><div class="info-item"><small>DDL 文件</small><strong class="mono">${esc(t.ddlFile||'未提供')}</strong></div></div></div>
+      <div class="detail-layout" style="margin-top:16px"><div class="card"><div class="section-head"><h2>字段定义 · ${cols.length}</h2></div><div style="overflow:auto"><table class="field-table"><thead><tr><th>字段</th><th>类型</th><th>语义角色</th><th>置信度</th></tr></thead><tbody>${cols.length?cols.map(c=>`<tr><td class="mono">${esc(c.name)}</td><td class="mono">${esc(c.type||'未知')}</td><td><span class="role-chip">${esc(c.role||c.semantic_type||'unknown')}</span></td><td>${c.confidence==null?'—':Math.round(Number(c.confidence)*100)+'%'}</td></tr>`).join(''):'<tr><td colspan="4"><div class="empty-guidance">未导入该表的 DDL，因此只能展示表级血缘。补充 ddl/*.sql 后可识别字段、类型和语义角色。</div></td></tr>'}</tbody></table></div></div>
+      <aside><div class="card card-pad"><h3>上下游</h3><label class="eyebrow" style="margin-top:16px">上游 ${t.upstream.length}</label>${relationList(t.upstream,'←')}<label class="eyebrow" style="margin-top:16px">下游 ${t.downstream.length}</label>${relationList(t.downstream,'→')}</div><div class="card card-pad" style="margin-top:16px"><h3>加工与 SQL 证据</h3><div class="evidence-list">${ev.length?ev.map(e=>`<div class="evidence-item">${esc(e.operation||'SQL')} · ${esc(e.file||'文件未知')}${e.line?' : '+esc(e.line):''}<br>${esc(e.source)} → ${esc(e.target)}</div>`).join(''):'<div class="empty-guidance">没有与该表关联的 SQL 血缘证据。</div>'}</div></div></aside></div>`;
+      host.querySelectorAll('[data-related]').forEach(el=>el.onclick=()=>selectAsset(el.dataset.related));
+    }
+    function selectAsset(name){selectedAsset=name;renderAssetDetail();navigate('detail')}
+    ['assetSearch','layerFilter','riskOnly'].forEach(id=>document.getElementById(id).addEventListener('input',renderAssets)); renderAssets();
+    let metrics=[];
+    function renderMetrics(){const q=document.getElementById('metricSearch').value.toLowerCase();document.getElementById('metricGrid').innerHTML=metrics.filter(m=>(m[0]+m[1]).toLowerCase().includes(q)).map(m=>`<div class="card metric-card"><div style="display:flex;justify-content:space-between"><div><h3>${m[0]}</h3><div class="table-desc mono">${m[1]}</div></div><span class="health ${m[4]==='已确认'?'ok':'warn'}">${m[4]}</span></div><div class="formula">${m[2]}</div><div class="metric-foot"><span>粒度：${m[3]}</span></div></div>`).join('')||'<div class="load-state"><strong>尚无指标数据</strong>导入并完成分析后显示真实指标。</div>'};document.getElementById('metricSearch').oninput=renderMetrics;renderMetrics();
+    let nodes=[],graphEdges=[],graphFocus='',graphDepth='3',selectedNode=null;
+    function nodeLayer(id){const table=(id||'').split('.')[0]+'.'+(id||'').split('.')[1];const t=tables.find(x=>x.name===id||x.name===table);return t?.layer||'OTHER'}
+    function graphSubset(){
+      const q=graphFocus.toLowerCase(),allIds=new Set(nodes.map(n=>String(n.id||n.n)));
+      if(!q)return {ids:allIds,edges:graphEdges};
+      const seeds=[...allIds].filter(id=>id.toLowerCase().includes(q));if(!seeds.length)return {ids:new Set(),edges:[]};
+      const allowed=new Set(seeds),limit=graphDepth==='all'?Infinity:Number(graphDepth||3);let frontier=seeds;
+      for(let d=0;d<limit;d++){const next=[];graphEdges.forEach(e=>{if(frontier.includes(String(e.source))&&!allowed.has(String(e.target))){allowed.add(String(e.target));next.push(String(e.target))}if(frontier.includes(String(e.target))&&!allowed.has(String(e.source))){allowed.add(String(e.source));next.push(String(e.source))}});frontier=next}
+      return {ids:allowed,edges:graphEdges.filter(e=>allowed.has(String(e.source))&&allowed.has(String(e.target)))};
+    }
+    function layoutGraph(visible){
+      const laneOrder={SOURCE:0,RDS:0,OTHER:0,ODS:1,DWD:2,DIM:2,DWS:3,ADS:4},lanes=[[],[],[],[],[]];
+      visible.forEach(n=>lanes[laneOrder[n.l]??2].push(n));lanes.forEach(l=>l.sort((a,b)=>a.n.localeCompare(b.n)));
+      lanes.forEach((lane,x)=>lane.forEach((n,y)=>{n.x=24+x*220;n.y=62+y*104}));
+      return {width:Math.max(1160,24+5*220),height:Math.max(590,100+Math.max(1,...lanes.map(x=>x.length))*104)}
+    }
+    function addEdge(area,a,b,edge){const ax=a.x+176,ay=a.y+34,bx=b.x,by=b.y+34,dx=bx-ax,dy=by-ay,len=Math.sqrt(dx*dx+dy*dy),ang=Math.atan2(dy,dx)*180/Math.PI;const e=document.createElement('div');e.className='edge';e.dataset.source=edge.source;e.dataset.target=edge.target;e.style.cssText=`left:${ax}px;top:${ay}px;width:${len}px;transform:rotate(${ang}deg)`;area.appendChild(e)}
+    function showNodeEvidence(n){
+      selectedNode=String(n.id||n.n);document.getElementById('evidenceTitle').textContent=n.n;
+      const related=graphEdges.filter(e=>String(e.source)===selectedNode||String(e.target)===selectedNode);
+      document.getElementById('evidenceDesc').innerHTML=related.length?`<div class="evidence-list">${related.map(e=>`<div class="evidence-item">${esc(e.source)} → ${esc(e.target)}<br>${esc(e.file||'文件未知')}${e.line?' : '+esc(e.line):''}${e.operation?' · '+esc(e.operation):''}</div>`).join('')}</div>`:'<div class="empty-guidance">该节点没有已识别的关系证据。</div>';
+      const tableName=tables.find(t=>selectedNode===t.name||selectedNode.startsWith(t.name+'.'))?.name;
+      const btn=document.getElementById('openSelectedAsset');btn.disabled=!tableName;btn.dataset.table=tableName||'';
+    }
+    function renderGraph(){const area=document.getElementById('graphArea');area.innerHTML='';const subset=graphSubset(),visible=nodes.filter(n=>subset.ids.has(String(n.id||n.n))),size=layoutGraph(visible);area.style.width=size.width+'px';area.style.height=size.height+'px';const byId=new Map(visible.map(n=>[String(n.id||n.n),n]));subset.edges.forEach(edge=>{const a=byId.get(String(edge.source)),b=byId.get(String(edge.target));if(a&&b)addEdge(area,a,b,edge)});visible.forEach(n=>{const el=document.createElement('div');el.className='node'+(selectedNode===String(n.id||n.n)?' selected':'');el.dataset.id=String(n.id||n.n);el.style.cssText=`left:${n.x}px;top:${n.y}px;--c:${layerColor[n.l]||'#55718c'}`;el.tabIndex=0;el.setAttribute('role','button');el.innerHTML=`<span class="layer">${esc(n.l)}</span><strong>${esc(n.n)}</strong><small>${esc(n.d)}</small>`;el.onclick=()=>{document.querySelectorAll('.node').forEach(x=>x.classList.remove('selected'));el.classList.add('selected');showNodeEvidence(n)};el.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();el.click()}};area.appendChild(el)});if(!visible.length)area.innerHTML='<div class="load-state"><strong>没有匹配的血缘节点</strong>清空搜索条件，或切换表级/字段级血缘。</div>'}
+    function setGraphFocus(query,depth){graphFocus=query||'';graphDepth=depth||'3';renderGraph()}
+    function setLineageMode(){selectedNode=null;document.getElementById('evidenceTitle').textContent='正在读取真实血缘';document.getElementById('evidenceDesc').innerHTML='<p>正在切换分析层级…</p>';window.dispatchEvent(new CustomEvent('dfi:lineage-mode',{detail:{mode:document.getElementById('lineageMode').value}}))}
+    function renderWorkflow(jobs,edges){
+      const host=document.getElementById('workflowResult');jobs=jobs||[];edges=edges||[];
+      if(!jobs.length){host.innerHTML='<div class="load-state"><strong>未识别到作业清单</strong>项目包中补充 metadata/jobs.csv，并填写 job_name、upstream_jobs、schedule 等字段后重新导入。</div>';return}
+      const incoming=name=>edges.filter(e=>String(e.target)===String(name)).map(e=>e.source);
+      host.innerHTML=`<div class="section-head"><h2>${jobs.length} 个作业 · ${edges.length} 条依赖</h2><span class="subtle">依赖状态来自 jobs.csv 或静态推断</span></div><div class="workflow-grid">${jobs.map((j,i)=>{const name=j.job_name||j.name||j.id||('作业 '+(i+1)),ups=incoming(name);return `<article class="workflow-job"><span class="eyebrow">JOB ${String(i+1).padStart(2,'0')}</span><strong class="mono">${esc(name)}</strong><div class="workflow-deps">${esc(j.schedule||j.cron||'未提供调度周期')}<br>上游：${ups.length?ups.map(esc).join('、'):'无'}</div><span class="health ${j.relation_status==='inferred'||j.confirmed===false?'warn':'ok'}">${j.relation_status==='inferred'||j.confirmed===false?'推断依赖':'清单定义'}</span></article>`}).join('')}</div>${edges.length?`<div class="workflow-edge-list"><h3>依赖证据</h3><div class="evidence-list">${edges.map(e=>`<div class="evidence-item">${esc(e.source)} → ${esc(e.target)} · ${esc(e.status||'未标注')}</div>`).join('')}</div></div>`:''}`;
+    }
+    function navigate(page){document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));const target=document.getElementById('page-'+page);if(target)target.classList.add('active');document.querySelectorAll('.nav button').forEach(b=>b.classList.toggle('active',b.dataset.page===page));document.getElementById('sidebar').classList.remove('open');window.scrollTo({top:0,behavior:'smooth'})}
+    document.querySelectorAll('[data-page],[data-goto]').forEach(el=>el.onclick=()=>navigate(el.dataset.page||el.dataset.goto));
+    document.querySelectorAll('.pipe-node').forEach(n=>n.onclick=()=>{navigate('assets');document.getElementById('layerFilter').value=n.dataset.layer==='SOURCE'?'':n.dataset.layer;renderAssets()});
+    document.getElementById('menuBtn').onclick=()=>document.getElementById('sidebar').classList.toggle('open');
+    const drawer=document.getElementById('drawer');document.getElementById('importBtn').onclick=()=>drawer.classList.add('open');drawer.querySelector('.drawer-close').onclick=()=>drawer.classList.remove('open');drawer.onclick=e=>{if(e.target===drawer)drawer.classList.remove('open')};
+    const toast=document.getElementById('toast');function showToast(t){toast.textContent=t;toast.classList.add('show');setTimeout(()=>toast.classList.remove('show'),2200)}
+    document.getElementById('highlightPath').onclick=()=>{if(!selectedNode)return showToast('请先选择一个血缘节点');document.querySelectorAll('#graphArea .edge').forEach(edge=>edge.classList.toggle('dim',edge.dataset.source!==selectedNode&&edge.dataset.target!==selectedNode));document.querySelectorAll('#graphArea .node').forEach(node=>node.classList.toggle('dim',node.dataset.id!==selectedNode&&!graphEdges.some(e=>(String(e.source)===selectedNode&&String(e.target)===node.dataset.id)||(String(e.target)===selectedNode&&String(e.source)===node.dataset.id))));showToast('已聚焦选中节点的直接关系')};
+    document.getElementById('lineageMode').onchange=setLineageMode;
+    document.getElementById('lineageDepth').onchange=e=>setGraphFocus(document.getElementById('lineageSearch').value,e.target.value);
+    document.getElementById('lineageSearch').oninput=e=>setGraphFocus(e.target.value,document.getElementById('lineageDepth').value);
+    document.getElementById('openSelectedAsset').onclick=e=>{if(e.currentTarget.dataset.table)selectAsset(e.currentTarget.dataset.table)};
+    document.getElementById('detailLineage').onclick=()=>{if(!selectedAsset)return showToast('请先选择一张数据资产');document.getElementById('lineageMode').value='table';document.getElementById('lineageSearch').value=selectedAsset;setGraphFocus(selectedAsset,document.getElementById('lineageDepth').value);navigate('lineage')};
+    const initialPage=new URLSearchParams(location.search).get('page');
+    if(initialPage)navigate(initialPage);
+    window.DFI_UI={navigate,selectAsset,renderAssetDetail,renderAssets,renderMetrics,renderGraph,renderWorkflow,setGraphFocus,showToast,setTables(v){tables=v||[];if(selectedAsset&&!tables.some(t=>t.name===selectedAsset))selectedAsset=null},getTables(){return tables},setMetrics(v){metrics=v||[]},getMetrics(){return metrics},setNodes(v){nodes=v||[]},setEdges(v){graphEdges=v||[]}};
+  </script>
+  <script src="./product-app.js"></script>
+</body>
+</html>

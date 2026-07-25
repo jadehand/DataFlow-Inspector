@@ -1,0 +1,20 @@
+﻿# OS
+Thumbs.db
+.DS_Store
+*.lnk
+
+# Temp
+*.tmp
+*.log
+*.bak
+
+# Python 缓存（如果后端是 Python）
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Node 缓存（如果前端是 Node）
+node_modules/
+.npm
