@@ -2166,10 +2166,18 @@ def import_single_table_endpoint(pid: int, req: SingleTableImportRequest) -> dic
             result.inferred_relations, result.operations)
 
     # 写回
-    seed = (req.ddl + (req.etl_sql or "")).encode()
-    digest = hashlib.sha256(seed).hexdigest()
+    # 写回之前先保存原始 DDL/ETL 文本到文件
     new_version = latest_version + 1
     ts = now()
+    dest = IMPORT_DIR / str(pid) / str(new_version)
+    dest.mkdir(parents=True, exist_ok=True)
+    table_short = result.table_name.replace(".", "_") if result.table_name else "unknown"
+    (dest / f"{table_short}.ddl").write_text(req.ddl, encoding="utf-8")
+    if req.etl_sql:
+        (dest / f"{table_short}_etl.sql").write_text(req.etl_sql, encoding="utf-8")
+
+    seed = (req.ddl + (req.etl_sql or "")).encode()
+    digest = hashlib.sha256(seed).hexdigest()
     with db() as c:
         c.execute(
             """INSERT INTO imports(project_id,version,sha256,filename,status,created_at,analysis)

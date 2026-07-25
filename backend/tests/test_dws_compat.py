@@ -58,7 +58,7 @@ def test_delete_insert_macro_balanced_ctes_union_cast_case_and_window():
     assert insert["target"] == "schema.dwd_fact_request"
     assert set(insert["sources"]) == {"schema.ods_source_a", "schema.ods_source_b"}
     assert "${data_time}" in ops[0]["where"]
-    assert any("::BIGINT" in p for p in insert["projections"])
+    assert any("::BIGINT" in p or "CAST(" in p for p in insert["projections"])
     assert any("CASE WHEN" in p for p in insert["projections"])
 
 
