@@ -1,0 +1,16 @@
+# DataFlow Inspector 空白导入模板
+# 请将 project 替换为项目标识；不要填写数据库账号、密码或连接地址。
+project: my-data-project
+sql_dialect: gaussdb_dws
+timezone: Asia/Shanghai
+
+# 平台宏的示例值只用于静态解析，不会执行 SQL。
+variables:
+  biz_date: "2026-01-01"
+
+# 按实际命名规范调整正则。
+layer_rules:
+  ods: "^ods_"
+  dwd: "^dwd_"
+  dws: "^dws_"
+  ads: "^ads_"

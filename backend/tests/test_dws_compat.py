@@ -1,13 +1,4 @@
-import os
-from pathlib import Path
-
-os.environ["DFI_DATA_DIR"] = "/tmp/dataflow-inspector-tests"
-os.environ["DFI_DB_PATH"] = "/tmp/dataflow-inspector-tests/test.db"
-os.environ["DFI_IMPORT_DIR"] = "/tmp/dataflow-inspector-tests/imports"
-
-from fastapi.testclient import TestClient
-
-from app.main import analyze, app, parse_ddl, parse_sql
+from app.parser import analyze, parse_ddl, parse_sql
 
 
 DDL = """
@@ -58,7 +49,7 @@ def test_delete_insert_macro_balanced_ctes_union_cast_case_and_window():
     assert insert["target"] == "schema.dwd_fact_request"
     assert set(insert["sources"]) == {"schema.ods_source_a", "schema.ods_source_b"}
     assert "${data_time}" in ops[0]["where"]
-    assert any("::BIGINT" in p or "CAST(" in p for p in insert["projections"])
+    assert any("::BIGINT" in p for p in insert["projections"])
     assert any("CASE WHEN" in p for p in insert["projections"])
 
 
@@ -100,20 +91,18 @@ def test_aggregate_metrics_inside_ctes_are_catalogued(tmp_path):
     assert {"tpm", "val_avg", "val_p90"} <= names
 
 
-def test_cors_allows_only_local_non_8080_development_origins():
-    with TestClient(app) as client:
-        for origin in ("http://127.0.0.1:15173", "http://localhost:18080",
-                       "https://localhost:4173"):
-            response = client.options("/api/projects", headers={
-                "Origin": origin, "Access-Control-Request-Method": "GET",
-            })
-            assert response.status_code == 200
-            assert response.headers["access-control-allow-origin"] == origin
+def test_cors_allows_only_local_non_8080_development_origins(client):
+    for origin in ("http://127.0.0.1:15173", "http://localhost:18080", "https://localhost:4173"):
+        response = client.options("/api/projects", headers={
+            "Origin": origin, "Access-Control-Request-Method": "GET",
+        })
+        assert response.status_code == 200
+        assert response.headers["access-control-allow-origin"] == origin
 
-        for origin in ("http://127.0.0.1:8080", "http://localhost:8080",
-                       "http://192.168.1.2:15173", "https://example.com:15173"):
-            response = client.options("/api/projects", headers={
-                "Origin": origin, "Access-Control-Request-Method": "GET",
-            })
-            assert response.status_code == 400
-            assert "access-control-allow-origin" not in response.headers
+    for origin in ("http://127.0.0.1:8080", "http://localhost:8080",
+                   "http://192.168.1.2:15173", "https://example.com:15173"):
+        response = client.options("/api/projects", headers={
+            "Origin": origin, "Access-Control-Request-Method": "GET",
+        })
+        assert response.status_code == 400
+        assert "access-control-allow-origin" not in response.headers

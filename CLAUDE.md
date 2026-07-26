@@ -8,6 +8,8 @@
 
 DataFlow Inspector 是面向 DWS / 数仓分层加工场景的分析产品，不是纯演示页面。
 
+当前交付基线是 P2 可用版本，服务于约 5 人的可信内部小组。P3 权限、审计、规模化与生产治理已延期到 `docs/future-roadmap.md`，不得把这些未来事项误判为当前功能修复的前置条件。
+
 核心目标：
 
 - 导入 DDL、ETL SQL、作业清单、脱敏样例
@@ -45,16 +47,28 @@ DataFlow Inspector 是面向 DWS / 数仓分层加工场景的分析产品，不
 - 不连接真实生产数据库
 - 不执行用户上传 SQL
 - 仅做静态解析与只读分析
-- 不把未验证的推断血缘当作"已确认事实"
+- 不把未验证的推断血缘当作“已确认事实”
 
 ## 3. 代码结构职责
 
 ### 3.1 后端
 
 - `backend/app/main.py`
-  - API 路由
-  - 导入、项目、版本、比较、影响分析接口
-  - HTTP 错误处理、日志、响应格式
+  - 应用工厂与路由装配
+  - 中间件、生命周期和统一异常处理
+
+- `backend/app/api/`
+  - HTTP 输入输出与状态码
+  - 调用 service，不承载解析和持久化细节
+
+- `backend/app/services/`
+  - 导入、查询、比较、影响分析、元数据和助手领域编排
+
+- `backend/app/db/`
+  - 数据库连接、schema 版本和 repository
+
+- `backend/app/tasks/`
+  - 异步导入队列、任务认领和启动恢复
 
 - `backend/app/parser/`
   - `ddl_parser.py`：DDL 解析
@@ -65,30 +79,47 @@ DataFlow Inspector 是面向 DWS / 数仓分层加工场景的分析产品，不
 
 原则：
 
-- 解析逻辑优先放 `parser/`，不要继续把复杂规则堆回 `main.py`
-- `main.py` 负责 API 编排，不负责承载大量领域解析细节
+- `main.py` 只做组合，不得重新成为业务中心
+- API 层不得直接拼装复杂 SQL 或复制 service 逻辑
+- 解析逻辑放 `parser/`，业务编排放 `services/`，持久化放 repository
+- 异步任务必须原子认领；进程重启后能够恢复待处理任务
+- ZIP 必须先完整校验再创建导入记录，拒绝路径穿越和压缩炸弹
 
 ### 3.2 前端
 
 - `frontend/src/index.html`
-  - 页面骨架
-  - 样式
-  - 少量不易拆分的纯展示脚本
+  - 应用挂载点与样式入口
+
+- `frontend/src/app.js`
+  - 应用组合根，创建 API、store、router、UI 与页面控制器
 
 - `frontend/src/product-app.js`
-  - API 请求
-  - 真实 / 演示模式切换
-  - 页面数据绑定
-  - 导入、比较、影响分析等业务交互
+  - 兼容启动协议的薄装配层，不承载业务
 
-- `frontend/src/mock-data.js`
-  - 仅在用户显式切换"演示模式"后可使用
+- `frontend/src/api/`
+  - 领域 API；网络请求只能通过 `api/client.js`
+
+- `frontend/src/state/` 与 `frontend/src/router.js`
+  - 深层不可变状态
+  - 管理 `page/project/table/left/right/focus` 深链和历史恢复
+
+- `frontend/src/pages/`
+  - 页面生命周期 adapter 与领域运行时
+  - 每个 DOM 业务事件必须有唯一所有者
+
+- `frontend/src/demo/mock-data.js`
+  - 仅在用户显式切换演示模式后读取的种子数据
 
 原则：
 
 - 真实模式下不得自动回填 mock 结果冒充真实数据
-- 新业务交互优先放入 `product-app.js`
-- `index.html` 中遗留静态示例块，如已被真实接口覆盖，应继续收口，不要新增新的"假动态"
+- 页面和运行时只能调用领域 API，不得直接 `fetch` 或绕过 client
+- `product-app.js`、`app.js` 和 runtime engine 必须保持薄装配层
+- 禁止恢复 `window.DFI_UI`、document 自定义页面事件或隐式 DOM click 通信
+- Live 与 Demo 必须使用不同 store，切换项目或模式时原子清理派生状态
+- 所有订阅、事件绑定、定时器和页面控制器必须提供 cleanup
+- 项目请求必须支持取消或 request generation，旧响应不得覆盖新项目
+- 页面业务模块保持可审查规模，单文件不得演变为新的巨型控制器
 
 ## 4. 接口契约要求
 
@@ -150,7 +181,7 @@ DataFlow Inspector 是面向 DWS / 数仓分层加工场景的分析产品，不
 
 ### 5.2 表详情页
 
-表详情页的目标是"彻底真实化"，即：
+表详情页的目标是“彻底真实化”，即：
 
 - 表头信息来自真实选中表，而不是写死的示例表
 - 字段列表来自真实字段集合
@@ -171,6 +202,12 @@ DataFlow Inspector 是面向 DWS / 数仓分层加工场景的分析产品，不
 
 ### 6.1 改动后必须做的最低验证
 
+所有代码改动至少执行：
+
+```bash
+make check
+```
+
 #### 后端改动
 
 至少验证：
@@ -186,7 +223,7 @@ DataFlow Inspector 是面向 DWS / 数仓分层加工场景的分析产品，不
 
 - 页面可加载
 - 控制台无明显脚本错误
-- 关键按钮不是"只有 toast 没有数据更新"
+- 关键按钮不是“只有 toast 没有数据更新”
 - 真实模式能拿到并渲染对应接口结果
 
 ### 6.2 关键链路回归
@@ -201,6 +238,14 @@ DataFlow Inspector 是面向 DWS / 数仓分层加工场景的分析产品，不
 - 版本比较页
 - 影响分析页
 
+若改动影响导入、比较、影响分析、路由/store 或跨层接口契约，还必须执行：
+
+```bash
+make dev
+make p2-check
+make stop
+```
+
 ### 6.3 回归环境
 
 - 前端：`15173`
@@ -210,9 +255,10 @@ DataFlow Inspector 是面向 DWS / 数仓分层加工场景的分析产品，不
 ## 7. 改动原则
 
 - 优先修真实链路，不优先堆视觉壳
-- 优先消除"静态假数据覆盖真实接口"的问题
+- 优先消除“静态假数据覆盖真实接口”的问题
 - 优先补结构化返回，不优先补表面文案
-- 小步修改，避免大范围无验证重构
+- P0-P2 已完成，后续默认小步修改，避免再次无验收地整体重构
+- 未满足 `docs/future-roadmap.md` 的触发条件时，不主动实施完整 P3
 
 若发现已有页面是静态示例壳：
 
@@ -229,6 +275,8 @@ DataFlow Inspector 是面向 DWS / 数仓分层加工场景的分析产品，不
 - `backend/README.md`
 - `frontend/README.md`
 - `docs/` 下相关文档
+
+当前状态或范围变化时，必须同步更新根 `README.md`；架构职责或交付门禁变化时，必须同步更新本文件。
 
 ### 8.2 不应提交的内容
 
@@ -255,7 +303,7 @@ DataFlow Inspector 是面向 DWS / 数仓分层加工场景的分析产品，不
 
 - 表详情页仍需彻底真实化
 - 字段级编辑 / 批量保存 / 提交前 diff 还未闭环
-- 版本比较页还应继续增强"证据 + 影响联动"
+- 版本比较页还应继续增强“证据 + 影响联动”
 - 作业流、血缘、数据资产之间仍需更强跳转联动
 
 ## 10. 决策优先级

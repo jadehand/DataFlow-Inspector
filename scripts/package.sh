@@ -12,14 +12,24 @@ fi
 
 mkdir -p "${DIST_DIR}"
 tar \
+  --exclude='./.git' \
+  --exclude='./.pw-browsers' \
+  --exclude='./.vendor_py' \
+  --exclude='./.env' \
   --exclude='./dist' \
   --exclude='./.run' \
+  --exclude='./outputs' \
   --exclude='./frontend/node_modules' \
   --exclude='./backend/.venv' \
   --exclude='./backend/data' \
+  --exclude='*/.coverage' \
   --exclude='*/__pycache__' \
   --exclude='*/.pytest_cache' \
   --exclude='*.py[co]' \
+  --exclude='*.db' \
+  --exclude='*.db-shm' \
+  --exclude='*.db-wal' \
+  --exclude='*.log' \
   --exclude='.DS_Store' \
   -czf "${ARCHIVE}" \
   -C "${ROOT_DIR}" .

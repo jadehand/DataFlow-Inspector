@@ -19,10 +19,26 @@ curl -X POST 'http://127.0.0.1:18080/api/projects/1/imports?filename=demo.zip' \
   -H 'Content-Type: application/zip' --data-binary @../examples/token-traffic-demo.zip
 ```
 
+如果重构后入口迁移到工厂函数，可直接用：
+
+```bash
+cd ..
+DATAFLOW_BACKEND_APP=app.factory:create_app:factory make dev
+```
+
+`scripts/check.sh` 会自动尝试以下入口：
+
+- `app.factory:create_app`
+- `app.main:create_app`
+- `app.main:app`
+
+若都不存在，需显式设置 `DATAFLOW_BACKEND_APP`。
+
 主要接口：`/api/projects`、`/imports`、`/catalog`、`/lineage`、`/workflows`、
 `/metrics`、`/impact-analysis`、`/compare`、`/assistant/query`、
 `/dictionary/bulk`、`/dictionary/bulk/preview`、
-`/metadata/revisions`、`/metadata/compare`。
+`/metadata/revisions`、`/metadata/compare`、
+`/imports/{id}/files`、`/imports/{id}/files/content`、`/imports/{id}/files/export`。
 
 ## Metadata Revision
 
@@ -45,3 +61,16 @@ curl -X POST 'http://127.0.0.1:18080/api/projects/1/imports?filename=demo.zip' \
 
 静态解析覆盖常见 DDL、INSERT SELECT、CTAS、JOIN、GROUP BY 和字段投影。
 动态 SQL、存储过程、复杂宏及 `SELECT *` 的字段级映射会明确降级，不宣称完整。
+
+## 导入文件资产
+
+当前后端会统一记录导入文件资产：
+
+- ZIP 导入：保存原始解压文件并建立文件索引
+- 单表导入：把输入的 DDL / ETL 规范化落盘后再建立文件索引
+
+因此后续可以统一支持：
+
+- 查看原始 DDL / ETL
+- 导出单个导入文件
+- 导出某个分析版本全部导入文件
