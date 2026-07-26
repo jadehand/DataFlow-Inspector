@@ -28,12 +28,12 @@ make p2-check
 ## 已完成功能
 
 - 导入包含 DDL、SQL、作业清单和脱敏样例的项目包。
-- ZIP 导入支持预检、异步分析、状态恢复和危险压缩包防护。
+- ZIP 导入支持预检、异步分析、状态恢复和压缩炸弹防护。
 - 识别 ODS、DWD、DWS、ADS 表与字段。
 - 查询表级/字段级血缘、指标口径和作业流。
 - 检测时间口径不一致、`SELECT *`、指标过滤漂移等风险。
 - 比较两个导入版本的表、字段、血缘、指标和风险变化。
-- 对拟议字段或逻辑变更生成带证据、路径和建议的上下游影响说明。
+- 对字段或逻辑变更生成上下游影响说明，附带证据、影响路径和修改建议。
 - 前端提供概览、资产、详情、血缘、作业、指标、导入历史、版本比较、影响分析与助手视图。
 - 支持表级/字段级元数据集中保存、保存前差异预览和 metadata revision 快照。
 - 支持导入版本 compare 与 metadata revision compare 两类差异视图。
@@ -60,8 +60,8 @@ make dev
 - 前端：<http://127.0.0.1:15173/?api=http://127.0.0.1:18080/api>
 - 后端：<http://127.0.0.1:18080>
 
-启动脚本会先检查端口。它明确拒绝使用 `8080`，也不会停止或重启该端口上的服务。
-若重构后的后端入口不再是 `app.main:app`，可通过 `DATAFLOW_BACKEND_APP` 指定：
+启动脚本会检查端口占用，拒绝使用 `8080` 且不会触碰该端口已有服务。
+若后端入口不是默认的 `app.main:app`，可通过 `DATAFLOW_BACKEND_APP` 指定：
 
 ```bash
 DATAFLOW_BACKEND_APP=app.factory:create_app:factory make dev
@@ -88,14 +88,14 @@ make stop
 make smoke
 ```
 
-最小烟测会：
+冒烟测试覆盖以下检查：
 
-1. 检查后端健康状态。
-2. 校验 OpenAPI 中是否暴露核心路由。
-3. 验证 `15173` 可访问、`8080` 被拒绝的 CORS 边界。
-4. 创建临时项目并验证项目列表、项目详情。
-5. 验证导入接口存在且会拒绝非法负载。
-6. 校验错误返回结构是否包含 `error/detail/status_code/request_id`。
+1. 后端健康状态。
+2. OpenAPI 是否暴露核心路由。
+3. `15173` 可访问、`8080` 被 CORS 拒绝。
+4. 创建临时项目，验证项目列表和详情接口。
+5. 导入接口存在且拒绝非法负载。
+6. 错误返回结构包含 `error/detail/status_code/request_id`。
 
 可通过环境变量修改后端地址：
 
@@ -109,7 +109,7 @@ DATAFLOW_API_URL=http://127.0.0.1:18080 make smoke
 DATAFLOW_API_URL=http://127.0.0.1:18080 make p2-check
 ```
 
-该命令会先运行静态、单元和架构门禁，再对独立测试数据执行两版导入及完整业务 API 验收。详细人工验收口径见 [验收说明](docs/acceptance.md)。
+该命令先跑静态检查、单元测试和架构验证，再用独立测试数据执行两版 ZIP 导入及完整业务 API 验收。人工验收标准见 [验收说明](docs/acceptance.md)。
 
 ## Docker Compose
 
@@ -129,7 +129,7 @@ Compose 只映射 `18080` 和 `15173`，不会映射 `8080`。
 make package
 ```
 
-输出 `dist/dataflow-inspector-source.tar.gz`。归档排除运行日志、数据库、虚拟环境和 `node_modules`。
+输出 `dist/dataflow-inspector-source.tar.gz`。打包时排除运行日志、数据库、虚拟环境和 `node_modules`。
 
 ## 目录
 
@@ -150,7 +150,7 @@ tests_e2e/      黑盒验收脚本
 
 ## Metadata Revision
 
-保存表级或字段级元数据时，系统会生成一条 metadata revision 快照，用于审计和后续比较。
+保存表级或字段级元数据时，系统会生成一份 metadata revision 快照，用于审计和后续比较。
 
 当前支持：
 
